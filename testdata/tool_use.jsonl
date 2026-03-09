@@ -1,0 +1,6 @@
+{"type":"system","subtype":"init","session_id":"sess-tools","model":"claude-sonnet-4-5-20250514","tools":["Read","Write","Bash"],"cwd":"/tmp"}
+{"type":"assistant","message":{"model":"claude-sonnet-4-5-20250514","content":[{"type":"thinking","thinking":"Let me read the file first."}]},"session_id":"sess-tools"}
+{"type":"assistant","message":{"model":"claude-sonnet-4-5-20250514","content":[{"type":"tool_use","id":"tu_01","name":"Read","input":{"path":"/tmp/test.txt"}}]},"session_id":"sess-tools"}
+{"type":"assistant","message":{"model":"claude-sonnet-4-5-20250514","content":[{"type":"tool_result","tool_use_id":"tu_01","content":"file contents here"}]},"session_id":"sess-tools"}
+{"type":"assistant","message":{"model":"claude-sonnet-4-5-20250514","content":[{"type":"text","text":"The file contains: file contents here"}]},"session_id":"sess-tools"}
+{"type":"result","subtype":"success","duration_ms":5678,"total_cost_usd":0.05,"session_id":"sess-tools","usage":{"input_tokens":100,"output_tokens":50,"cache_read_input_tokens":20,"cache_creation_input_tokens":10}}
