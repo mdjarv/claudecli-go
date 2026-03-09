@@ -93,9 +93,42 @@ func parseContentBlock(block rawContent, resultText *[]string, ch chan<- Event) 
 	case "tool_result":
 		ch <- &ToolResultEvent{
 			ToolUseID: block.ToolUseID,
-			Content:   block.Content,
+			Content:   extractContent(block.Content),
 		}
 	}
+}
+
+// extractContent handles both string and array forms of tool result content.
+// String form: "some text"
+// Array form:  [{"type":"text","text":"some text"}, ...]
+func extractContent(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+
+	// Try string first.
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil {
+		return s
+	}
+
+	// Try array of content blocks.
+	var blocks []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	if err := json.Unmarshal(raw, &blocks); err == nil {
+		var parts []string
+		for _, b := range blocks {
+			if b.Text != "" {
+				parts = append(parts, b.Text)
+			}
+		}
+		return strings.Join(parts, "")
+	}
+
+	// Fallback: return raw JSON as-is.
+	return string(raw)
 }
 
 // rawEvent is the internal representation of a JSONL line from the CLI.
@@ -134,7 +167,7 @@ type rawContent struct {
 	Name      string          `json:"name,omitempty"`
 	Input     json.RawMessage `json:"input,omitempty"`
 	ToolUseID string          `json:"tool_use_id,omitempty"`
-	Content   string          `json:"content,omitempty"`
+	Content   json.RawMessage `json:"content,omitempty"`
 }
 
 type rawUsage struct {

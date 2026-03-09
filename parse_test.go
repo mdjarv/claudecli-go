@@ -180,6 +180,84 @@ also broken {{{
 	}
 }
 
+func TestParseToolResultArrayContent(t *testing.T) {
+	// MCP tool results send content as an array of content blocks.
+	input := `{"type":"system","session_id":"test","model":"sonnet"}
+{"type":"assistant","message":{"content":[{"type":"tool_result","tool_use_id":"tu_123","content":[{"type":"text","text":"mcp result text"}]}]}}
+{"type":"result","subtype":"success","total_cost_usd":0.01,"usage":{"input_tokens":10,"output_tokens":5}}
+`
+	ch := make(chan Event, 64)
+	go func() {
+		ParseEvents(strings.NewReader(input), ch)
+		close(ch)
+	}()
+
+	var events []Event
+	for e := range ch {
+		events = append(events, e)
+	}
+
+	var gotToolResult bool
+	for _, e := range events {
+		if tr, ok := e.(*ToolResultEvent); ok {
+			gotToolResult = true
+			if tr.Content != "mcp result text" {
+				t.Errorf("expected 'mcp result text', got %q", tr.Content)
+			}
+			if tr.ToolUseID != "tu_123" {
+				t.Errorf("expected tool_use_id 'tu_123', got %q", tr.ToolUseID)
+			}
+		}
+	}
+	if !gotToolResult {
+		t.Error("no ToolResultEvent found")
+	}
+
+	// Verify no errors were emitted.
+	for _, e := range events {
+		if err, ok := e.(*ErrorEvent); ok {
+			t.Errorf("unexpected error: %v", err)
+		}
+	}
+}
+
+func TestParseToolResultStringContent(t *testing.T) {
+	// Regular tool results send content as a plain string.
+	input := `{"type":"system","session_id":"test","model":"sonnet"}
+{"type":"assistant","message":{"content":[{"type":"tool_result","tool_use_id":"tu_456","content":"plain string result"}]}}
+{"type":"result","subtype":"success","total_cost_usd":0.01,"usage":{"input_tokens":10,"output_tokens":5}}
+`
+	ch := make(chan Event, 64)
+	go func() {
+		ParseEvents(strings.NewReader(input), ch)
+		close(ch)
+	}()
+
+	var events []Event
+	for e := range ch {
+		events = append(events, e)
+	}
+
+	var gotToolResult bool
+	for _, e := range events {
+		if tr, ok := e.(*ToolResultEvent); ok {
+			gotToolResult = true
+			if tr.Content != "plain string result" {
+				t.Errorf("expected 'plain string result', got %q", tr.Content)
+			}
+		}
+	}
+	if !gotToolResult {
+		t.Error("no ToolResultEvent found")
+	}
+
+	for _, e := range events {
+		if err, ok := e.(*ErrorEvent); ok {
+			t.Errorf("unexpected error: %v", err)
+		}
+	}
+}
+
 func TestParseReturnsAfterResult(t *testing.T) {
 	// Simulate a CLI that keeps stdout open after result (known bug).
 	// ParseEvents should return after the result event without blocking.
