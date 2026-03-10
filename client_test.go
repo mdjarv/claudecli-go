@@ -265,6 +265,83 @@ func TestRunProcessStartedBeforeReturn(t *testing.T) {
 	}
 }
 
+func TestStderrCallback(t *testing.T) {
+	// Simulate a process that emits stderr lines.
+	stderrContent := "warning: something\nerror: bad thing\n"
+	exec := &stderrExecutor{
+		stdout: `{"type":"system","session_id":"test","model":"sonnet"}
+{"type":"result","subtype":"success","total_cost_usd":0.01,"usage":{"input_tokens":10,"output_tokens":5}}
+`,
+		stderr: stderrContent,
+	}
+	var callbackLines []string
+	client := NewWithExecutor(exec)
+
+	stream := client.Run(context.Background(), "ignored",
+		WithStderrCallback(func(line string) {
+			callbackLines = append(callbackLines, line)
+		}),
+	)
+
+	_, err := stream.Wait()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(callbackLines) != 2 {
+		t.Fatalf("expected 2 callback calls, got %d", len(callbackLines))
+	}
+	if callbackLines[0] != "warning: something" {
+		t.Errorf("line 0 = %q", callbackLines[0])
+	}
+	if callbackLines[1] != "error: bad thing" {
+		t.Errorf("line 1 = %q", callbackLines[1])
+	}
+}
+
+type stderrExecutor struct {
+	stdout string
+	stderr string
+}
+
+func (e *stderrExecutor) Start(_ context.Context, _ *StartConfig) (*Process, error) {
+	return &Process{
+		Stdout: io.NopCloser(strings.NewReader(e.stdout)),
+		Stderr: io.NopCloser(strings.NewReader(e.stderr)),
+		Wait:   func() error { return nil },
+	}, nil
+}
+
+func TestEnableFileCheckpointing(t *testing.T) {
+	var capturedCfg *StartConfig
+	exec := &capturingExecutor{capture: func(cfg *StartConfig) { capturedCfg = cfg }}
+	client := NewWithExecutor(exec)
+
+	_ = client.Run(context.Background(), "ignored", WithFileCheckpointing())
+
+	if capturedCfg == nil {
+		t.Fatal("StartConfig not captured")
+	}
+	if !capturedCfg.EnableFileCheckpointing {
+		t.Error("EnableFileCheckpointing not set")
+	}
+}
+
+type capturingExecutor struct {
+	capture func(*StartConfig)
+}
+
+func (e *capturingExecutor) Start(_ context.Context, cfg *StartConfig) (*Process, error) {
+	if e.capture != nil {
+		e.capture(cfg)
+	}
+	return &Process{
+		Stdout: io.NopCloser(strings.NewReader("")),
+		Stderr: io.NopCloser(strings.NewReader("")),
+		Wait:   func() error { return nil },
+	}, nil
+}
+
 type failExecutor struct {
 	err error
 }

@@ -1,6 +1,7 @@
 package claudecli
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"os/exec"
@@ -41,25 +42,13 @@ func parseSemver(s string) (int, int, int, bool) {
 func compareSemver(a, b string) int {
 	aMaj, aMin, aPat, _ := parseSemver(a)
 	bMaj, bMin, bPat, _ := parseSemver(b)
-	switch {
-	case aMaj != bMaj:
-		return cmpInt(aMaj, bMaj)
-	case aMin != bMin:
-		return cmpInt(aMin, bMin)
-	default:
-		return cmpInt(aPat, bPat)
+	if c := cmp.Compare(aMaj, bMaj); c != 0 {
+		return c
 	}
-}
-
-func cmpInt(a, b int) int {
-	switch {
-	case a < b:
-		return -1
-	case a > b:
-		return 1
-	default:
-		return 0
+	if c := cmp.Compare(aMin, bMin); c != 0 {
+		return c
 	}
+	return cmp.Compare(aPat, bPat)
 }
 
 // CheckCLIVersion runs `claude -v` and returns an error if the version

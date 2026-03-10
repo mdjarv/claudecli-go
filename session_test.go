@@ -9,41 +9,85 @@ import (
 	"time"
 )
 
-func TestSessionInitialize(t *testing.T) {
+// sessionSim simulates the CLI side of a session for testing.
+// Handles the initialize handshake automatically.
+type sessionSim struct {
+	bidi   *BidiFixtureExecutor
+	reader *bufio.Reader
+}
+
+func newSessionSim() *sessionSim {
 	bidi := NewBidiFixtureExecutor()
-	client := NewWithExecutor(bidi)
+	return &sessionSim{
+		bidi:   bidi,
+		reader: bufio.NewReader(bidi.StdinReader),
+	}
+}
+
+// handleInit reads and responds to the initialize control request.
+func (s *sessionSim) handleInit(t *testing.T) {
+	t.Helper()
+	s.handleInitWith(t, "{}")
+}
+
+// handleInitWith reads and responds to the initialize control request
+// with a custom response body.
+func (s *sessionSim) handleInitWith(t *testing.T, responseJSON string) {
+	t.Helper()
+	line, err := s.reader.ReadBytes('\n')
+	if err != nil {
+		t.Errorf("read initialize: %v", err)
+		return
+	}
+	var req map[string]any
+	json.Unmarshal(line, &req)
+	if req["type"] != "control_request" {
+		t.Errorf("expected control_request, got %v", req["type"])
+	}
+	requestID := req["request_id"].(string)
+	resp := fmt.Sprintf(`{"type":"control_response","response":{"subtype":"success","request_id":"%s","response":%s}}`, requestID, responseJSON)
+	s.bidi.StdoutWriter.Write([]byte(resp + "\n"))
+}
+
+// readStdin reads and parses the next JSON message from stdin.
+func (s *sessionSim) readStdin(t *testing.T) map[string]any {
+	t.Helper()
+	line, _ := s.reader.ReadBytes('\n')
+	var msg map[string]any
+	json.Unmarshal(line, &msg)
+	return msg
+}
+
+// send writes a JSONL line to stdout.
+func (s *sessionSim) send(line string) {
+	s.bidi.StdoutWriter.Write([]byte(line + "\n"))
+}
+
+// sendResult sends system + result events and closes stdout.
+func (s *sessionSim) sendResult() {
+	s.send(`{"type":"system","session_id":"test-sess","model":"sonnet"}`)
+	s.send(`{"type":"result","subtype":"success","session_id":"test-sess","total_cost_usd":0.01,"usage":{"input_tokens":10,"output_tokens":5}}`)
+	s.bidi.StdoutWriter.Close()
+}
+
+// sendTextAndResult sends system + assistant text + result events and closes stdout.
+func (s *sessionSim) sendTextAndResult(text string) {
+	s.send(`{"type":"system","session_id":"test-sess","model":"sonnet"}`)
+	s.send(fmt.Sprintf(`{"type":"assistant","message":{"content":[{"type":"text","text":"%s"}]}}`, text))
+	s.send(`{"type":"result","subtype":"success","session_id":"test-sess","total_cost_usd":0.01,"usage":{"input_tokens":10,"output_tokens":5}}`)
+	s.bidi.StdoutWriter.Close()
+}
+
+func TestSessionInitialize(t *testing.T) {
+	sim := newSessionSim()
+	client := NewWithExecutor(sim.bidi)
 
 	go func() {
-		reader := bufio.NewReader(bidi.StdinReader)
-
-		// Read the initialize request
-		line, err := reader.ReadBytes('\n')
-		if err != nil {
-			t.Errorf("read initialize: %v", err)
-			return
-		}
-		var req map[string]any
-		json.Unmarshal(line, &req)
-
-		if req["type"] != "control_request" {
-			t.Errorf("expected control_request, got %v", req["type"])
-		}
-
-		// Send back success response
-		requestID := req["request_id"].(string)
-		resp := fmt.Sprintf(`{"type":"control_response","response":{"subtype":"success","request_id":"%s","response":{}}}`, requestID)
-		bidi.StdoutWriter.Write([]byte(resp + "\n"))
-
-		// Send system event
-		bidi.StdoutWriter.Write([]byte(`{"type":"system","session_id":"test-sess","model":"sonnet"}` + "\n"))
-
-		// Send assistant response
-		bidi.StdoutWriter.Write([]byte(`{"type":"assistant","message":{"content":[{"type":"text","text":"Hello!"}]}}` + "\n"))
-
-		// Send result
-		bidi.StdoutWriter.Write([]byte(`{"type":"result","subtype":"success","session_id":"test-sess","total_cost_usd":0.01,"usage":{"input_tokens":10,"output_tokens":5}}` + "\n"))
-
-		bidi.StdoutWriter.Close()
+		sim.handleInit(t)
+		sim.send(`{"type":"system","session_id":"test-sess","model":"sonnet"}`)
+		sim.send(`{"type":"assistant","message":{"content":[{"type":"text","text":"Hello!"}]}}`)
+		sim.send(`{"type":"result","subtype":"success","session_id":"test-sess","total_cost_usd":0.01,"usage":{"input_tokens":10,"output_tokens":5}}`)
+		sim.bidi.StdoutWriter.Close()
 	}()
 
 	session, err := client.Connect(context.Background())
@@ -76,39 +120,22 @@ func TestSessionInitialize(t *testing.T) {
 }
 
 func TestSessionQuery(t *testing.T) {
-	bidi := NewBidiFixtureExecutor()
-	client := NewWithExecutor(bidi)
+	sim := newSessionSim()
+	client := NewWithExecutor(sim.bidi)
 
 	go func() {
-		reader := bufio.NewReader(bidi.StdinReader)
+		sim.handleInit(t)
 
-		// Handle initialize
-		line, _ := reader.ReadBytes('\n')
-		var req map[string]any
-		json.Unmarshal(line, &req)
-		requestID := req["request_id"].(string)
-		resp := fmt.Sprintf(`{"type":"control_response","response":{"subtype":"success","request_id":"%s","response":{}}}`, requestID)
-		bidi.StdoutWriter.Write([]byte(resp + "\n"))
-
-		// Wait for the user query
-		queryLine, _ := reader.ReadBytes('\n')
-		var queryMsg map[string]any
-		json.Unmarshal(queryLine, &queryMsg)
-
-		if queryMsg["type"] != "user" {
-			t.Errorf("expected user message, got %v", queryMsg["type"])
+		msg := sim.readStdin(t)
+		if msg["type"] != "user" {
+			t.Errorf("expected user message, got %v", msg["type"])
+		}
+		body := msg["message"].(map[string]any)
+		if body["content"] != "What is Go?" {
+			t.Errorf("expected 'What is Go?', got %v", body["content"])
 		}
 
-		msg := queryMsg["message"].(map[string]any)
-		if msg["content"] != "What is Go?" {
-			t.Errorf("expected 'What is Go?', got %v", msg["content"])
-		}
-
-		// Send response
-		bidi.StdoutWriter.Write([]byte(`{"type":"system","session_id":"test-sess","model":"sonnet"}` + "\n"))
-		bidi.StdoutWriter.Write([]byte(`{"type":"assistant","message":{"content":[{"type":"text","text":"Response to query"}]}}` + "\n"))
-		bidi.StdoutWriter.Write([]byte(`{"type":"result","subtype":"success","session_id":"test-sess","total_cost_usd":0.01,"usage":{"input_tokens":10,"output_tokens":5}}` + "\n"))
-		bidi.StdoutWriter.Close()
+		sim.sendTextAndResult("Response to query")
 	}()
 
 	session, err := client.Connect(context.Background())
@@ -133,48 +160,82 @@ func TestSessionQuery(t *testing.T) {
 	}
 }
 
-func TestSessionCanUseTool(t *testing.T) {
-	bidi := NewBidiFixtureExecutor()
-
-	toolCallbackCalled := make(chan bool, 1)
-
-	client := NewWithExecutor(bidi)
+func TestSessionMultiQuery(t *testing.T) {
+	sim := newSessionSim()
+	client := NewWithExecutor(sim.bidi)
 
 	go func() {
-		reader := bufio.NewReader(bidi.StdinReader)
+		sim.handleInit(t)
 
-		// Handle initialize
-		line, _ := reader.ReadBytes('\n')
-		var req map[string]any
-		json.Unmarshal(line, &req)
-		requestID := req["request_id"].(string)
-		resp := fmt.Sprintf(`{"type":"control_response","response":{"subtype":"success","request_id":"%s","response":{}}}`, requestID)
-		bidi.StdoutWriter.Write([]byte(resp + "\n"))
+		// First query
+		sim.readStdin(t)
+		sim.send(`{"type":"system","session_id":"test-sess","model":"sonnet"}`)
+		sim.send(`{"type":"assistant","message":{"content":[{"type":"text","text":"first"}]}}`)
+		sim.send(`{"type":"result","subtype":"success","session_id":"test-sess","total_cost_usd":0.01,"usage":{"input_tokens":10,"output_tokens":5}}`)
+
+		// Second query
+		sim.readStdin(t)
+		sim.send(`{"type":"assistant","message":{"content":[{"type":"text","text":"second"}]}}`)
+		sim.send(`{"type":"result","subtype":"success","session_id":"test-sess","total_cost_usd":0.02,"usage":{"input_tokens":20,"output_tokens":10}}`)
+
+		sim.bidi.StdoutWriter.Close()
+	}()
+
+	session, err := client.Connect(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close()
+
+	session.Query("q1")
+
+	// Drain first result
+	var results []*ResultEvent
+	for event := range session.Events() {
+		if r, ok := event.(*ResultEvent); ok {
+			results = append(results, r)
+			if len(results) == 1 {
+				// Send second query after first result
+				session.Query("q2")
+			}
+		}
+	}
+
+	if len(results) != 2 {
+		t.Fatalf("expected 2 results, got %d", len(results))
+	}
+	// Text accumulation resets between results
+	if results[0].Text != "first" {
+		t.Errorf("first result text = %q, want 'first'", results[0].Text)
+	}
+	if results[1].Text != "second" {
+		t.Errorf("second result text = %q, want 'second'", results[1].Text)
+	}
+}
+
+func TestSessionCanUseTool(t *testing.T) {
+	sim := newSessionSim()
+	toolCallbackCalled := make(chan bool, 1)
+	client := NewWithExecutor(sim.bidi)
+
+	go func() {
+		sim.handleInit(t)
 
 		// Send a can_use_tool control request
-		bidi.StdoutWriter.Write([]byte(`{"type":"control_request","request_id":"cli_req_1","request":{"subtype":"can_use_tool","tool_name":"Bash","input":{"command":"ls"}}}` + "\n"))
+		sim.send(`{"type":"control_request","request_id":"cli_req_1","request":{"subtype":"can_use_tool","tool_name":"Bash","input":{"command":"ls"}}}`)
 
 		// Read the permission response from stdin
-		permResp, _ := reader.ReadBytes('\n')
-		var permRespMsg map[string]any
-		json.Unmarshal(permResp, &permRespMsg)
-
-		// Verify it's a success response
-		response := permRespMsg["response"].(map[string]any)
+		permResp := sim.readStdin(t)
+		response := permResp["response"].(map[string]any)
 		if response["subtype"] != "success" {
 			t.Errorf("expected success, got %v", response["subtype"])
 		}
-
-		// Verify the behavior is allow
 		inner := response["response"].(map[string]any)
 		if inner["behavior"] != "allow" {
 			t.Errorf("expected allow, got %v", inner["behavior"])
 		}
 
-		// Send result to end session
-		bidi.StdoutWriter.Write([]byte(`{"type":"system","session_id":"test-sess","model":"sonnet"}` + "\n"))
-		bidi.StdoutWriter.Write([]byte(`{"type":"result","subtype":"success","session_id":"test-sess","total_cost_usd":0.01,"usage":{"input_tokens":10,"output_tokens":5}}` + "\n"))
-		bidi.StdoutWriter.Close()
+		sim.sendResult()
 	}()
 
 	session, err := client.Connect(context.Background(), WithCanUseTool(func(name string, input json.RawMessage) (*PermissionResponse, error) {
@@ -202,29 +263,16 @@ func TestSessionCanUseTool(t *testing.T) {
 }
 
 func TestSessionCanUseToolDeny(t *testing.T) {
-	bidi := NewBidiFixtureExecutor()
-	client := NewWithExecutor(bidi)
+	sim := newSessionSim()
+	client := NewWithExecutor(sim.bidi)
 
 	go func() {
-		reader := bufio.NewReader(bidi.StdinReader)
+		sim.handleInit(t)
 
-		// Handle initialize
-		line, _ := reader.ReadBytes('\n')
-		var req map[string]any
-		json.Unmarshal(line, &req)
-		requestID := req["request_id"].(string)
-		resp := fmt.Sprintf(`{"type":"control_response","response":{"subtype":"success","request_id":"%s","response":{}}}`, requestID)
-		bidi.StdoutWriter.Write([]byte(resp + "\n"))
+		sim.send(`{"type":"control_request","request_id":"cli_req_1","request":{"subtype":"can_use_tool","tool_name":"Bash","input":{"command":"rm -rf /"}}}`)
 
-		// Send a can_use_tool control request
-		bidi.StdoutWriter.Write([]byte(`{"type":"control_request","request_id":"cli_req_1","request":{"subtype":"can_use_tool","tool_name":"Bash","input":{"command":"rm -rf /"}}}` + "\n"))
-
-		// Read the permission response
-		permResp, _ := reader.ReadBytes('\n')
-		var permRespMsg map[string]any
-		json.Unmarshal(permResp, &permRespMsg)
-
-		response := permRespMsg["response"].(map[string]any)
+		permResp := sim.readStdin(t)
+		response := permResp["response"].(map[string]any)
 		inner := response["response"].(map[string]any)
 		if inner["behavior"] != "deny" {
 			t.Errorf("expected deny, got %v", inner["behavior"])
@@ -233,10 +281,7 @@ func TestSessionCanUseToolDeny(t *testing.T) {
 			t.Errorf("expected 'dangerous command', got %v", inner["message"])
 		}
 
-		// Send result
-		bidi.StdoutWriter.Write([]byte(`{"type":"system","session_id":"test-sess","model":"sonnet"}` + "\n"))
-		bidi.StdoutWriter.Write([]byte(`{"type":"result","subtype":"success","session_id":"test-sess","total_cost_usd":0.01,"usage":{"input_tokens":10,"output_tokens":5}}` + "\n"))
-		bidi.StdoutWriter.Close()
+		sim.sendResult()
 	}()
 
 	session, err := client.Connect(context.Background(), WithCanUseTool(func(name string, input json.RawMessage) (*PermissionResponse, error) {
@@ -254,25 +299,13 @@ func TestSessionCanUseToolDeny(t *testing.T) {
 }
 
 func TestSessionClose(t *testing.T) {
-	bidi := NewBidiFixtureExecutor()
-	client := NewWithExecutor(bidi)
+	sim := newSessionSim()
+	client := NewWithExecutor(sim.bidi)
 
 	go func() {
-		reader := bufio.NewReader(bidi.StdinReader)
-
-		// Handle initialize
-		line, _ := reader.ReadBytes('\n')
-		var req map[string]any
-		json.Unmarshal(line, &req)
-		requestID := req["request_id"].(string)
-		resp := fmt.Sprintf(`{"type":"control_response","response":{"subtype":"success","request_id":"%s","response":{}}}`, requestID)
-		bidi.StdoutWriter.Write([]byte(resp + "\n"))
-
-		// Keep stdout open until the test closes it
-		// (simulate a long-running session)
-		// The Close() call will cancel the context
+		sim.handleInit(t)
 		time.Sleep(50 * time.Millisecond)
-		bidi.StdoutWriter.Close()
+		sim.bidi.StdoutWriter.Close()
 	}()
 
 	session, err := client.Connect(context.Background())
@@ -296,23 +329,12 @@ func TestSessionClose(t *testing.T) {
 }
 
 func TestSessionWaitIdempotent(t *testing.T) {
-	bidi := NewBidiFixtureExecutor()
-	client := NewWithExecutor(bidi)
+	sim := newSessionSim()
+	client := NewWithExecutor(sim.bidi)
 
 	go func() {
-		reader := bufio.NewReader(bidi.StdinReader)
-
-		// Handle initialize
-		line, _ := reader.ReadBytes('\n')
-		var req map[string]any
-		json.Unmarshal(line, &req)
-		requestID := req["request_id"].(string)
-		resp := fmt.Sprintf(`{"type":"control_response","response":{"subtype":"success","request_id":"%s","response":{}}}`, requestID)
-		bidi.StdoutWriter.Write([]byte(resp + "\n"))
-
-		bidi.StdoutWriter.Write([]byte(`{"type":"system","session_id":"test-sess","model":"sonnet"}` + "\n"))
-		bidi.StdoutWriter.Write([]byte(`{"type":"result","subtype":"success","session_id":"test-sess","total_cost_usd":0.01,"usage":{"input_tokens":10,"output_tokens":5}}` + "\n"))
-		bidi.StdoutWriter.Close()
+		sim.handleInit(t)
+		sim.sendResult()
 	}()
 
 	session, err := client.Connect(context.Background())
@@ -332,23 +354,12 @@ func TestSessionWaitIdempotent(t *testing.T) {
 }
 
 func TestSessionStateTracking(t *testing.T) {
-	bidi := NewBidiFixtureExecutor()
-	client := NewWithExecutor(bidi)
+	sim := newSessionSim()
+	client := NewWithExecutor(sim.bidi)
 
 	go func() {
-		reader := bufio.NewReader(bidi.StdinReader)
-
-		line, _ := reader.ReadBytes('\n')
-		var req map[string]any
-		json.Unmarshal(line, &req)
-		requestID := req["request_id"].(string)
-		resp := fmt.Sprintf(`{"type":"control_response","response":{"subtype":"success","request_id":"%s","response":{}}}`, requestID)
-		bidi.StdoutWriter.Write([]byte(resp + "\n"))
-
-		bidi.StdoutWriter.Write([]byte(`{"type":"system","session_id":"test-sess","model":"sonnet"}` + "\n"))
-		bidi.StdoutWriter.Write([]byte(`{"type":"assistant","message":{"content":[{"type":"text","text":"hi"}]}}` + "\n"))
-		bidi.StdoutWriter.Write([]byte(`{"type":"result","subtype":"success","session_id":"test-sess","total_cost_usd":0.01,"usage":{"input_tokens":10,"output_tokens":5}}` + "\n"))
-		bidi.StdoutWriter.Close()
+		sim.handleInit(t)
+		sim.sendTextAndResult("hi")
 	}()
 
 	session, err := client.Connect(context.Background())
@@ -374,7 +385,6 @@ func TestSessionStateTracking(t *testing.T) {
 		t.Error("missing ResultEvent")
 	}
 
-	// After all events consumed, final state should be StateDone
 	session.stateMu.Lock()
 	st := session.state
 	session.stateMu.Unlock()
@@ -384,20 +394,16 @@ func TestSessionStateTracking(t *testing.T) {
 }
 
 func TestSessionInitializeTimeout(t *testing.T) {
-	bidi := NewBidiFixtureExecutor()
-	client := NewWithExecutor(bidi)
+	sim := newSessionSim()
+	client := NewWithExecutor(sim.bidi)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
 
-	// Don't respond to initialize — should timeout
 	go func() {
-		// Read the initialize request but don't respond
-		reader := bufio.NewReader(bidi.StdinReader)
-		reader.ReadBytes('\n')
-		// Let it timeout, then close
+		sim.reader.ReadBytes('\n')
 		time.Sleep(100 * time.Millisecond)
-		bidi.StdoutWriter.Close()
+		sim.bidi.StdoutWriter.Close()
 	}()
 
 	_, err := client.Connect(ctx)
@@ -413,7 +419,6 @@ func TestSessionBuildSessionArgs(t *testing.T) {
 	})
 	args := opts.buildSessionArgs()
 
-	// Should have --input-format stream-json
 	var hasInputFormat bool
 	for i, a := range args {
 		if a == "--input-format" && i+1 < len(args) && args[i+1] == "stream-json" {
@@ -424,15 +429,10 @@ func TestSessionBuildSessionArgs(t *testing.T) {
 		t.Error("missing --input-format stream-json")
 	}
 
-	// Should NOT have --print (sessions don't use --print)
 	for _, a := range args {
 		if a == "--print" {
 			t.Error("session args should not have --print")
 		}
-	}
-
-	// Should NOT have --no-session-persistence
-	for _, a := range args {
 		if a == "--no-session-persistence" {
 			t.Error("session args should not have --no-session-persistence")
 		}
@@ -459,23 +459,12 @@ func TestSessionBuildSessionArgsWithCanUseTool(t *testing.T) {
 }
 
 func TestSessionGetServerInfo(t *testing.T) {
-	bidi := NewBidiFixtureExecutor()
-	client := NewWithExecutor(bidi)
+	sim := newSessionSim()
+	client := NewWithExecutor(sim.bidi)
 
 	go func() {
-		reader := bufio.NewReader(bidi.StdinReader)
-
-		line, _ := reader.ReadBytes('\n')
-		var req map[string]any
-		json.Unmarshal(line, &req)
-		requestID := req["request_id"].(string)
-
-		resp := fmt.Sprintf(`{"type":"control_response","response":{"subtype":"success","request_id":"%s","response":{"version":"1.2.3","tools":["Bash","Read"]}}}`, requestID)
-		bidi.StdoutWriter.Write([]byte(resp + "\n"))
-
-		bidi.StdoutWriter.Write([]byte(`{"type":"system","session_id":"test-sess","model":"sonnet"}` + "\n"))
-		bidi.StdoutWriter.Write([]byte(`{"type":"result","subtype":"success","session_id":"test-sess","total_cost_usd":0.01,"usage":{"input_tokens":10,"output_tokens":5}}` + "\n"))
-		bidi.StdoutWriter.Close()
+		sim.handleInitWith(t, `{"version":"1.2.3","tools":["Bash","Read"]}`)
+		sim.sendResult()
 	}()
 
 	session, err := client.Connect(context.Background())
@@ -499,23 +488,13 @@ func TestSessionGetServerInfo(t *testing.T) {
 }
 
 func TestSessionRewindFiles(t *testing.T) {
-	bidi := NewBidiFixtureExecutor()
-	client := NewWithExecutor(bidi)
+	sim := newSessionSim()
+	client := NewWithExecutor(sim.bidi)
 
 	go func() {
-		reader := bufio.NewReader(bidi.StdinReader)
+		sim.handleInit(t)
 
-		line, _ := reader.ReadBytes('\n')
-		var req map[string]any
-		json.Unmarshal(line, &req)
-		requestID := req["request_id"].(string)
-		resp := fmt.Sprintf(`{"type":"control_response","response":{"subtype":"success","request_id":"%s","response":{}}}`, requestID)
-		bidi.StdoutWriter.Write([]byte(resp + "\n"))
-
-		ctrlLine, _ := reader.ReadBytes('\n')
-		var ctrlReq map[string]any
-		json.Unmarshal(ctrlLine, &ctrlReq)
-
+		ctrlReq := sim.readStdin(t)
 		if ctrlReq["type"] != "control_request" {
 			t.Errorf("expected control_request, got %v", ctrlReq["type"])
 		}
@@ -527,9 +506,7 @@ func TestSessionRewindFiles(t *testing.T) {
 			t.Errorf("expected msg-abc-123, got %v", request["user_message_id"])
 		}
 
-		bidi.StdoutWriter.Write([]byte(`{"type":"system","session_id":"test-sess","model":"sonnet"}` + "\n"))
-		bidi.StdoutWriter.Write([]byte(`{"type":"result","subtype":"success","session_id":"test-sess","total_cost_usd":0.01,"usage":{"input_tokens":10,"output_tokens":5}}` + "\n"))
-		bidi.StdoutWriter.Close()
+		sim.sendResult()
 	}()
 
 	session, err := client.Connect(context.Background())
@@ -549,23 +526,13 @@ func TestSessionRewindFiles(t *testing.T) {
 }
 
 func TestSessionGetMCPStatus(t *testing.T) {
-	bidi := NewBidiFixtureExecutor()
-	client := NewWithExecutor(bidi)
+	sim := newSessionSim()
+	client := NewWithExecutor(sim.bidi)
 
 	go func() {
-		reader := bufio.NewReader(bidi.StdinReader)
+		sim.handleInit(t)
 
-		line, _ := reader.ReadBytes('\n')
-		var req map[string]any
-		json.Unmarshal(line, &req)
-		requestID := req["request_id"].(string)
-		resp := fmt.Sprintf(`{"type":"control_response","response":{"subtype":"success","request_id":"%s","response":{}}}`, requestID)
-		bidi.StdoutWriter.Write([]byte(resp + "\n"))
-
-		ctrlLine, _ := reader.ReadBytes('\n')
-		var ctrlReq map[string]any
-		json.Unmarshal(ctrlLine, &ctrlReq)
-
+		ctrlReq := sim.readStdin(t)
 		if ctrlReq["type"] != "control_request" {
 			t.Errorf("expected control_request, got %v", ctrlReq["type"])
 		}
@@ -574,9 +541,7 @@ func TestSessionGetMCPStatus(t *testing.T) {
 			t.Errorf("expected mcp_status, got %v", request["subtype"])
 		}
 
-		bidi.StdoutWriter.Write([]byte(`{"type":"system","session_id":"test-sess","model":"sonnet"}` + "\n"))
-		bidi.StdoutWriter.Write([]byte(`{"type":"result","subtype":"success","session_id":"test-sess","total_cost_usd":0.01,"usage":{"input_tokens":10,"output_tokens":5}}` + "\n"))
-		bidi.StdoutWriter.Close()
+		sim.sendResult()
 	}()
 
 	session, err := client.Connect(context.Background())

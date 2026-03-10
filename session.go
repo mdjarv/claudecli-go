@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"os/exec"
 	"strings"
 	"sync"
@@ -91,7 +92,7 @@ func (s *Session) Interrupt() error {
 
 // SetPermissionMode changes the permission mode mid-session.
 func (s *Session) SetPermissionMode(mode PermissionMode) error {
-	return s.sendControlRequest("set_permission_mode", map[string]string{"mode": string(mode)})
+	return s.sendControlRequest("set_permission_mode", map[string]any{"mode": string(mode)})
 }
 
 // SetModel changes the model mid-session.
@@ -106,12 +107,12 @@ func (s *Session) GetServerInfo() json.RawMessage {
 
 // RewindFiles rewinds files to a previous checkpoint.
 func (s *Session) RewindFiles(userMessageID string) error {
-	return s.sendControlRequest("rewind_files", map[string]string{"user_message_id": userMessageID})
+	return s.sendControlRequest("rewind_files", map[string]any{"user_message_id": userMessageID})
 }
 
 // ReconnectMCPServer reconnects a named MCP server.
 func (s *Session) ReconnectMCPServer(serverName string) error {
-	return s.sendControlRequest("mcp_reconnect", map[string]string{"server_name": serverName})
+	return s.sendControlRequest("mcp_reconnect", map[string]any{"server_name": serverName})
 }
 
 // ToggleMCPServer enables or disables a named MCP server.
@@ -124,7 +125,7 @@ func (s *Session) ToggleMCPServer(serverName string, enabled bool) error {
 
 // StopTask stops a running task by ID.
 func (s *Session) StopTask(taskID string) error {
-	return s.sendControlRequest("stop_task", map[string]string{"task_id": taskID})
+	return s.sendControlRequest("stop_task", map[string]any{"task_id": taskID})
 }
 
 // GetMCPStatus queries MCP server connection status.
@@ -153,23 +154,13 @@ func (s *Session) writeStdin(data []byte) error {
 }
 
 // sendControlRequest sends a control request to the CLI (fire-and-forget).
-func (s *Session) sendControlRequest(subtype string, data any) error {
+func (s *Session) sendControlRequest(subtype string, data map[string]any) error {
 	id := fmt.Sprintf("req_%d", s.reqCounter.Add(1))
 
 	reqMap := map[string]any{
 		"subtype": subtype,
 	}
-	if data != nil {
-		if m, ok := data.(map[string]string); ok {
-			for k, v := range m {
-				reqMap[k] = v
-			}
-		} else if m, ok := data.(map[string]any); ok {
-			for k, v := range m {
-				reqMap[k] = v
-			}
-		}
-	}
+	maps.Copy(reqMap, data)
 
 	payload := map[string]any{
 		"type":       "control_request",
