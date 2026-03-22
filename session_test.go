@@ -882,6 +882,62 @@ func TestStateIdleString(t *testing.T) {
 	}
 }
 
+func TestSessionInitTimeoutSeparateFromControlTimeout(t *testing.T) {
+	sim := newSessionSim()
+	client := NewWithExecutor(sim.bidi)
+
+	go func() {
+		// Delay the init response by 200ms — longer than the controlTimeout
+		// but shorter than the initTimeout.
+		line, _ := sim.reader.ReadBytes('\n')
+		time.Sleep(200 * time.Millisecond)
+		var req map[string]any
+		json.Unmarshal(line, &req)
+		requestID := req["request_id"].(string)
+		resp := fmt.Sprintf(`{"type":"control_response","response":{"subtype":"success","request_id":"%s","response":{}}}`, requestID)
+		sim.bidi.StdoutWriter.Write([]byte(resp + "\n"))
+		sim.sendResult()
+	}()
+
+	// controlTimeout is very short (50ms), but initTimeout is longer (1s).
+	// Without separate timeouts, this would fail.
+	session, err := client.Connect(context.Background(),
+		WithControlTimeout(50*time.Millisecond),
+		WithInitTimeout(1*time.Second),
+	)
+	if err != nil {
+		t.Fatalf("Connect should succeed with separate initTimeout: %v", err)
+	}
+	defer session.Close()
+
+	_, err = session.Wait()
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestSessionInitTimeoutExpires(t *testing.T) {
+	sim := newSessionSim()
+	client := NewWithExecutor(sim.bidi)
+
+	go func() {
+		// Never respond to initialize.
+		sim.reader.ReadBytes('\n')
+		time.Sleep(500 * time.Millisecond)
+		sim.bidi.StdoutWriter.Close()
+	}()
+
+	_, err := client.Connect(context.Background(),
+		WithInitTimeout(100*time.Millisecond),
+	)
+	if err == nil {
+		t.Fatal("expected timeout error")
+	}
+	if !strings.Contains(err.Error(), "timeout") {
+		t.Errorf("expected timeout error, got: %v", err)
+	}
+}
+
 func TestSessionPendingRequestsFailOnProcessExit(t *testing.T) {
 	sim := newSessionSim()
 	client := NewWithExecutor(sim.bidi)

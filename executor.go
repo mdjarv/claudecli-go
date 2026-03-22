@@ -8,7 +8,6 @@ import (
 	"maps"
 	"os"
 	"os/exec"
-	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -81,12 +80,7 @@ func (e *LocalExecutor) Start(ctx context.Context, cfg *StartConfig) (*Process, 
 		return nil, fmt.Errorf("claude binary not found: %w", err)
 	}
 
-	cmd := exec.CommandContext(ctx, resolvedBinary, cfg.Args...)
-	if runtime.GOOS == "linux" {
-		if stdbuf, err := exec.LookPath("stdbuf"); err == nil {
-			cmd = exec.CommandContext(ctx, stdbuf, append([]string{"-oL", resolvedBinary}, cfg.Args...)...)
-		}
-	}
+	cmd := buildPlatformCmd(ctx, resolvedBinary, cfg.Args)
 
 	stdinPipe, err := cmd.StdinPipe()
 	if err != nil {

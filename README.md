@@ -376,6 +376,7 @@ All events implement the sealed `Event` interface. Use type switches or type ass
 | `WithResume(string)`                 | Resume a session by ID (mutually exclusive with `WithSessionID`/`WithContinue`).                      |
 | `WithCanUseTool(ToolPermissionFunc)` | Tool permission callback (sessions only).                                                             |
 | `WithControlTimeout(time.Duration)` | Timeout for control protocol round-trips (default: 30s). Sessions only.                               |
+| `WithInitTimeout(time.Duration)`   | Timeout for the initialize handshake (default: 60s). Increase if MCP servers are slow to connect. Sessions only. |
 | `WithPermissionPromptToolName(string)` | Custom permission prompt tool name (default: `"stdio"`). Sessions only.                             |
 | `WithEnv(map[string]string)`         | Additional environment variables.                                                                     |
 | `WithExtraArgs(map[string]string)`   | Arbitrary `--key value` flags for forward compatibility. Empty value emits flag only.                  |
@@ -419,8 +420,8 @@ claudecli-go/
   permission.go  PermissionMode constants
   option.go      Functional options + CLI arg builder
   executor.go         Executor interface, LocalExecutor, FixtureExecutor, BidiFixtureExecutor
-  executor_unix.go    Unix process group attrs (Setpgid, SIGTERM)
-  executor_windows.go Windows no-op (default cmd.Process.Kill behavior)
+  executor_unix.go    Unix process group attrs (Setpgid, SIGTERM), stdbuf wrapping
+  executor_windows.go Windows no-op platform attrs
   parse.go       JSONL stream parser (decoupled from process lifecycle)
   stream.go      Stream with State(), Events(), Next(), Wait(), Close()
   client.go      Client struct, Run/RunText/RunJSON/Connect, package-level shortcuts
@@ -434,7 +435,7 @@ claudecli-go/
 **Layers:**
 
 1. **Parse** (`parse.go`) — JSONL deserialization into typed events. Zero coupling to process execution. Testable with fixtures. Returns immediately after the result event to avoid blocking on CLI hang bugs.
-2. **Execute** (`executor.go`) — `Executor` interface abstracts process spawning. `LocalExecutor` handles the real CLI with platform-aware line buffering (`stdbuf -oL` on Linux).
+2. **Execute** (`executor.go`, `executor_{unix,windows}.go`) — `Executor` interface abstracts process spawning. `LocalExecutor` handles the real CLI with platform-aware command construction: `stdbuf -oL` wrapping on Linux, npm `.cmd` shim bypass on Windows.
 3. **Client** (`client.go`) — Composes executor + options. Builds CLI args, starts process synchronously, reads events in goroutine. Synthesizes `ResultEvent` if CLI exits without one. `Connect()` creates interactive sessions.
 4. **Session** (`session.go`) — Bidirectional control protocol over stdin/stdout. Handles initialize handshake, control request routing (tool permissions), and multi-turn conversations.
 5. **Blocking** (`blocking.go`) — Non-streaming path using `--output-format json`. Simpler execution model for `RunBlocking`/`RunBlockingJSON`.
@@ -444,3 +445,4 @@ claudecli-go/
 - **JSONL format is unversioned** — Claude CLI's `stream-json` output format is not formally versioned by Anthropic. Tested with Claude Code CLI 2.x. Breaking changes across CLI versions are possible.
 - **No retry/backoff** — `RateLimitEvent` is emitted but the package does not automatically retry or backoff. Consumers must implement their own retry logic.
 - **`stdbuf` recommended on Linux** — `LocalExecutor` uses `stdbuf -oL` for line-buffered stdout on Linux when available, falling back to direct execution without it.
+- **MCP server startup can be slow** — The CLI waits for MCP server connections during the initialize handshake. With many MCP servers configured, this can take 30+ seconds. The `WithInitTimeout` option (default 60s) controls this; increase it if `Connect()` times out.

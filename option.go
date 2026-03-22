@@ -79,6 +79,7 @@ type options struct {
 	// session callbacks
 	canUseTool     ToolPermissionFunc
 	controlTimeout time.Duration // timeout for control request responses
+	initTimeout    time.Duration // timeout for initialize handshake (includes MCP startup)
 
 	// version check
 	skipVersionCheck bool
@@ -166,10 +167,19 @@ func WithCanUseTool(fn ToolPermissionFunc) Option {
 }
 
 // WithControlTimeout sets the timeout for control protocol request/response
-// round-trips (e.g. initialize, set_model, mcp operations). Defaults to 30s.
+// round-trips (e.g. set_model, mcp operations). Defaults to 30s.
+// Does not affect the initialize handshake — use WithInitTimeout for that.
 // Only effective with Connect() sessions.
 func WithControlTimeout(d time.Duration) Option {
 	return func(o *options) { o.controlTimeout = d }
+}
+
+// WithInitTimeout sets the timeout for the initialize handshake during
+// Connect(). This is separate from WithControlTimeout because initialization
+// can be slow when the CLI is connecting to MCP servers. Defaults to 60s.
+// Only effective with Connect() sessions.
+func WithInitTimeout(d time.Duration) Option {
+	return func(o *options) { o.initTimeout = d }
 }
 
 // WithIncludePartialMessages enables partial message chunks as they arrive.

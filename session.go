@@ -13,6 +13,7 @@ import (
 )
 
 const defaultControlTimeout = 30 * time.Second
+const defaultInitTimeout = 60 * time.Second
 
 // Session represents a long-lived interactive Claude CLI session with
 // bidirectional control protocol support.
@@ -34,6 +35,7 @@ type Session struct {
 	reqCounter     atomic.Int64
 	pending        sync.Map // map[string]chan controlResult
 	controlTimeout time.Duration
+	initTimeout    time.Duration
 	controlWg      sync.WaitGroup // tracks in-flight handleControlRequest goroutines
 
 	// callbacks
@@ -256,6 +258,8 @@ func (s *Session) sendControlRequest(subtype string, data map[string]any) error 
 }
 
 // initialize sends the initialize control request and waits for response.
+// Uses initTimeout (default 60s) rather than controlTimeout because the CLI
+// may need extra time to connect to MCP servers during startup.
 func (s *Session) initialize() error {
 	id := fmt.Sprintf("req_%d", s.reqCounter.Add(1))
 	resultCh := make(chan controlResult, 1)
@@ -277,7 +281,7 @@ func (s *Session) initialize() error {
 		return fmt.Errorf("write initialize: %w", err)
 	}
 
-	ctx, cancel := context.WithTimeout(s.ctx, s.controlTimeout)
+	ctx, cancel := context.WithTimeout(s.ctx, s.initTimeout)
 	defer cancel()
 
 	select {
@@ -291,7 +295,7 @@ func (s *Session) initialize() error {
 		if s.ctx.Err() != nil {
 			return s.ctx.Err()
 		}
-		return fmt.Errorf("initialize: timeout after %s", s.controlTimeout)
+		return fmt.Errorf("initialize: timeout after %s", s.initTimeout)
 	}
 }
 

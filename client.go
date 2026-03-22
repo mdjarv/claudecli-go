@@ -276,6 +276,10 @@ func (c *Client) Connect(ctx context.Context, opts ...Option) (*Session, error) 
 	if controlTimeout <= 0 {
 		controlTimeout = defaultControlTimeout
 	}
+	initTimeout := resolved.initTimeout
+	if initTimeout <= 0 {
+		initTimeout = defaultInitTimeout
+	}
 
 	session := &Session{
 		proc:           proc,
@@ -285,6 +289,7 @@ func (c *Client) Connect(ctx context.Context, opts ...Option) (*Session, error) 
 		cancel:         cancel,
 		canUseTool:     resolved.canUseTool,
 		controlTimeout: controlTimeout,
+		initTimeout:    initTimeout,
 	}
 
 	go session.readLoop()
