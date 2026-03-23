@@ -1198,3 +1198,97 @@ func TestSessionCanUseToolCancelledDuringCallback(t *testing.T) {
 		t.Fatal("Close() hung — callback not cancelled by context")
 	}
 }
+
+func TestPrepareQueryEdgeCases(t *testing.T) {
+	t.Run("running rejects", func(t *testing.T) {
+		sim := newSessionSim()
+		client := NewWithExecutor(sim.bidi)
+
+		checked := make(chan struct{})
+		go func() {
+			sim.handleInit(t)
+			sim.readStdin(t) // consume the query
+			// Keep stdout open until assertion completes
+			<-checked
+			sim.bidi.StdoutWriter.Close()
+		}()
+
+		session, err := client.Connect(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer session.Close()
+
+		if err := session.Query("first"); err != nil {
+			t.Fatal(err)
+		}
+
+		err = session.prepareQuery()
+		close(checked)
+		if err == nil || !strings.Contains(err.Error(), "query already in progress") {
+			t.Fatalf("expected 'query already in progress', got %v", err)
+		}
+	})
+
+	t.Run("done rejects", func(t *testing.T) {
+		sim := newSessionSim()
+		client := NewWithExecutor(sim.bidi)
+
+		go func() {
+			sim.handleInit(t)
+			sim.sendResult()
+		}()
+
+		session, err := client.Connect(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer session.Close()
+
+		// Wait for result, then drain events so process exits cleanly
+		session.Wait()
+		for range session.Events() {
+		}
+
+		// readLoop has exited and setDoneState ran — state is now Done
+		err = session.prepareQuery()
+		if err == nil || !strings.Contains(err.Error(), "session ended") {
+			t.Fatalf("expected 'session ended', got %v", err)
+		}
+	})
+
+	t.Run("idle succeeds", func(t *testing.T) {
+		sim := newSessionSim()
+		client := NewWithExecutor(sim.bidi)
+
+		go func() {
+			sim.handleInit(t)
+			// Send system + result to transition to Idle
+			sim.send(`{"type":"system","session_id":"test-sess","model":"sonnet"}`)
+			sim.send(`{"type":"result","subtype":"success","session_id":"test-sess","total_cost_usd":0.01,"usage":{"input_tokens":10,"output_tokens":5}}`)
+			// Read the query that prepareQuery + sendUserMessage will produce
+			sim.readStdin(t)
+			sim.bidi.StdoutWriter.Close()
+		}()
+
+		session, err := client.Connect(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer session.Close()
+
+		// Wait for result so state becomes Idle
+		session.Wait()
+
+		err = session.prepareQuery()
+		if err != nil {
+			t.Fatalf("expected nil error from idle state, got %v", err)
+		}
+		if session.State() != StateRunning {
+			t.Fatalf("expected StateRunning after prepareQuery, got %s", session.State())
+		}
+
+		// Send a message so the sim goroutine can read and close
+		session.sendUserMessage("cleanup")
+	})
+}

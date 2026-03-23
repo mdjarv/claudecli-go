@@ -193,27 +193,36 @@ func WithIncludePartialMessages() Option {
 	return func(o *options) { o.includePartialMessages = true }
 }
 
-func (o *options) buildArgs() []string {
-	return o.buildArgsWithFormat("stream-json")
-}
-
-func (o *options) buildBlockingArgs() []string {
-	return o.buildArgsWithFormat("json")
-}
-
-func (o *options) buildArgsWithFormat(format string) []string {
-	args := []string{"--print", "--verbose", "--output-format", format}
+// buildCommonArgs returns flags shared by all three builders:
+// model, prompts, tools, output, MCP, agents, settings, exec.
+// Does NOT include --print, --output-format, --input-format, --verbose,
+// or session/permission flags — those are mode-specific.
+func (o *options) buildCommonArgs() []string {
+	var args []string
 
 	o.appendModelArgs(&args)
 	o.appendPromptArgs(&args)
 	o.appendToolArgs(&args)
 	o.appendOutputArgs(&args)
-	o.appendSessionArgs(&args)
 	o.appendMCPArgs(&args)
 	o.appendAgentArgs(&args)
 	o.appendSettingsArgs(&args)
 	o.appendExecArgs(&args)
 
+	return args
+}
+
+func (o *options) buildArgs() []string {
+	args := []string{"--print", "--verbose", "--output-format", "stream-json"}
+	args = append(args, o.buildCommonArgs()...)
+	o.appendSessionArgs(&args)
+	return args
+}
+
+func (o *options) buildBlockingArgs() []string {
+	args := []string{"--print", "--verbose", "--output-format", "json"}
+	args = append(args, o.buildCommonArgs()...)
+	o.appendSessionArgs(&args)
 	return args
 }
 
@@ -357,11 +366,7 @@ func (o *options) appendExecArgs(args *[]string) {
 
 func (o *options) buildSessionArgs() []string {
 	args := []string{"--verbose", "--output-format", "stream-json", "--input-format", "stream-json"}
-
-	o.appendModelArgs(&args)
-	o.appendPromptArgs(&args)
-	o.appendToolArgs(&args)
-	o.appendOutputArgs(&args)
+	args = append(args, o.buildCommonArgs()...)
 
 	// Session mode: skip --no-session-persistence, keep session/continue flags
 	if o.sessionID != "" {
@@ -374,11 +379,6 @@ func (o *options) buildSessionArgs() []string {
 	} else if o.continueSession {
 		args = append(args, "--continue")
 	}
-
-	o.appendMCPArgs(&args)
-	o.appendAgentArgs(&args)
-	o.appendSettingsArgs(&args)
-	o.appendExecArgs(&args)
 
 	if o.canUseTool != nil {
 		toolName := "stdio"

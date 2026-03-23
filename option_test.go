@@ -413,3 +413,120 @@ func TestBuildSessionArgsWithCanUseTool(t *testing.T) {
 		t.Error("missing --permission-prompt-tool stdio")
 	}
 }
+
+func TestBuildCommonArgsIncludesSharedFlags(t *testing.T) {
+	opts := resolveOptions(nil, []Option{
+		WithModel(ModelOpus),
+		WithTools("Read", "Write"),
+		WithSystemPrompt("test prompt"),
+		WithMaxBudget(2.0),
+		WithAddDirs("/tmp"),
+		WithMCPConfig("/mcp.json"),
+		WithAgent("reviewer"),
+		WithSettings("/settings.json"),
+		WithEffort("high"),
+	})
+	args := opts.buildCommonArgs()
+
+	checks := map[string]string{
+		"--model":          string(ModelOpus),
+		"--system-prompt":  "test prompt",
+		"--max-budget-usd": "2.00",
+		"--mcp-config":     "/mcp.json",
+		"--agent":          "reviewer",
+		"--settings":       "/settings.json",
+		"--effort":         "high",
+	}
+	for flag, want := range checks {
+		if v, ok := argValue(args, flag); !ok || v != want {
+			t.Errorf("buildCommonArgs missing %s=%s, got %q", flag, want, v)
+		}
+	}
+	if n := argCount(args, "--allowedTools"); n != 2 {
+		t.Errorf("expected 2 --allowedTools, got %d", n)
+	}
+	if n := argCount(args, "--add-dir"); n != 1 {
+		t.Errorf("expected 1 --add-dir, got %d", n)
+	}
+}
+
+func TestBuildCommonArgsExcludesModeSpecificFlags(t *testing.T) {
+	opts := resolveOptions(nil, []Option{WithModel(ModelOpus)})
+	args := opts.buildCommonArgs()
+
+	forbidden := []string{
+		"--print",
+		"--verbose",
+		"--output-format",
+		"--input-format",
+		"--no-session-persistence",
+		"--permission-prompt-tool",
+	}
+	for _, flag := range forbidden {
+		if slices.Contains(args, flag) {
+			t.Errorf("buildCommonArgs should not contain %s", flag)
+		}
+	}
+}
+
+func TestBuildersOutputUnchangedRegression(t *testing.T) {
+	// Verify all three builders produce the same args as before the refactor
+	// for a representative set of options.
+	opts := resolveOptions(nil, []Option{
+		WithModel(ModelOpus),
+		WithTools("Read"),
+		WithSystemPrompt("sp"),
+		WithMaxBudget(1.0),
+		WithEffort("high"),
+	})
+
+	// buildArgs: must have --print, --verbose, --output-format stream-json, --no-session-persistence
+	args := opts.buildArgs()
+	for _, required := range []string{"--print", "--verbose", "--no-session-persistence"} {
+		if !slices.Contains(args, required) {
+			t.Errorf("buildArgs missing %s", required)
+		}
+	}
+	if v, _ := argValue(args, "--output-format"); v != "stream-json" {
+		t.Errorf("buildArgs output-format = %q, want stream-json", v)
+	}
+
+	// buildBlockingArgs: must have --print, --verbose, --output-format json
+	bargs := opts.buildBlockingArgs()
+	for _, required := range []string{"--print", "--verbose"} {
+		if !slices.Contains(bargs, required) {
+			t.Errorf("buildBlockingArgs missing %s", required)
+		}
+	}
+	if v, _ := argValue(bargs, "--output-format"); v != "json" {
+		t.Errorf("buildBlockingArgs output-format = %q, want json", v)
+	}
+
+	// buildSessionArgs: must have --verbose, --input-format stream-json, NO --print
+	sargs := opts.buildSessionArgs()
+	if !slices.Contains(sargs, "--verbose") {
+		t.Error("buildSessionArgs missing --verbose")
+	}
+	if v, _ := argValue(sargs, "--input-format"); v != "stream-json" {
+		t.Errorf("buildSessionArgs input-format = %q, want stream-json", v)
+	}
+	if slices.Contains(sargs, "--print") {
+		t.Error("buildSessionArgs should not have --print")
+	}
+	if slices.Contains(sargs, "--no-session-persistence") {
+		t.Error("buildSessionArgs should not have --no-session-persistence")
+	}
+
+	// All three should share the common flags
+	for _, a := range [][]string{args, bargs, sargs} {
+		if v, _ := argValue(a, "--model"); v != string(ModelOpus) {
+			t.Errorf("missing model in builder output")
+		}
+		if v, _ := argValue(a, "--effort"); v != "high" {
+			t.Errorf("missing effort in builder output")
+		}
+		if n := argCount(a, "--allowedTools"); n != 1 {
+			t.Errorf("expected 1 --allowedTools, got %d", n)
+		}
+	}
+}

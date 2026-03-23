@@ -71,19 +71,17 @@ func (s *Session) SessionID() string {
 	return s.sessionID
 }
 
-// Query sends a user message to the CLI.
-func (s *Session) Query(prompt string) error {
+// prepareQuery validates state and transitions to StateRunning.
+// Must be called before sending any query.
+func (s *Session) prepareQuery() error {
 	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
 	switch s.state {
 	case StateFailed:
-		err := s.err
-		s.stateMu.Unlock()
-		return fmt.Errorf("session failed: %w", err)
+		return fmt.Errorf("session failed: %w", s.err)
 	case StateRunning:
-		s.stateMu.Unlock()
 		return fmt.Errorf("query already in progress")
 	case StateDone:
-		s.stateMu.Unlock()
 		return fmt.Errorf("session ended")
 	}
 	// Valid: StateStarting (initial query), StateIdle (subsequent queries)
@@ -93,49 +91,11 @@ func (s *Session) Query(prompt string) error {
 	s.err = nil
 	s.resultReady = make(chan struct{})
 	s.resultCloseOnce = sync.Once{}
-	s.stateMu.Unlock()
-
-	msg := userMessage{
-		Type:            "user",
-		SessionID:       s.sessionID,
-		Message:         messageBody{Role: "user", Content: prompt},
-		ParentToolUseID: nil,
-	}
-	data, err := json.Marshal(msg)
-	if err != nil {
-		return fmt.Errorf("marshal user message: %w", err)
-	}
-	return s.writeStdin(append(data, '\n'))
+	return nil
 }
 
-// QueryWithContent sends a user message with multimodal content blocks.
-// The prompt is prepended as a text block, followed by the provided blocks.
-func (s *Session) QueryWithContent(prompt string, blocks ...ContentBlock) error {
-	s.stateMu.Lock()
-	switch s.state {
-	case StateFailed:
-		err := s.err
-		s.stateMu.Unlock()
-		return fmt.Errorf("session failed: %w", err)
-	case StateRunning:
-		s.stateMu.Unlock()
-		return fmt.Errorf("query already in progress")
-	case StateDone:
-		s.stateMu.Unlock()
-		return fmt.Errorf("session ended")
-	}
-	s.state = StateRunning
-	s.waited = false
-	s.result = nil
-	s.err = nil
-	s.resultReady = make(chan struct{})
-	s.resultCloseOnce = sync.Once{}
-	s.stateMu.Unlock()
-
-	content := make([]ContentBlock, 0, 1+len(blocks))
-	content = append(content, TextBlock(prompt))
-	content = append(content, blocks...)
-
+// sendUserMessage marshals and writes a user message with the given content.
+func (s *Session) sendUserMessage(content any) error {
 	msg := userMessage{
 		Type:            "user",
 		SessionID:       s.sessionID,
@@ -147,6 +107,26 @@ func (s *Session) QueryWithContent(prompt string, blocks ...ContentBlock) error 
 		return fmt.Errorf("marshal user message: %w", err)
 	}
 	return s.writeStdin(append(data, '\n'))
+}
+
+// Query sends a user message to the CLI.
+func (s *Session) Query(prompt string) error {
+	if err := s.prepareQuery(); err != nil {
+		return err
+	}
+	return s.sendUserMessage(prompt)
+}
+
+// QueryWithContent sends a user message with multimodal content blocks.
+// The prompt is prepended as a text block, followed by the provided blocks.
+func (s *Session) QueryWithContent(prompt string, blocks ...ContentBlock) error {
+	if err := s.prepareQuery(); err != nil {
+		return err
+	}
+	content := make([]ContentBlock, 0, 1+len(blocks))
+	content = append(content, TextBlock(prompt))
+	content = append(content, blocks...)
+	return s.sendUserMessage(content)
 }
 
 // Wait blocks until a ResultEvent or error for the current query.

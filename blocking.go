@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"os/exec"
 	"strings"
 	"sync"
 	"time"
@@ -104,27 +103,6 @@ func pickJSONSource(result *BlockingResult) []byte {
 		return result.StructuredOutput
 	}
 	return []byte(stripCodeFence(result.Text))
-}
-
-func processExitError(err error, stderr string) *Error {
-	details := parseErrorDetails(stderr)
-	var msg string
-	if details != nil {
-		msg = details.Message
-	}
-	exitErr, ok := err.(*exec.ExitError)
-	if !ok {
-		if msg == "" {
-			msg = err.Error()
-		}
-		return &Error{ExitCode: -1, Stderr: stderr, Message: msg, Details: details}
-	}
-	return &Error{
-		ExitCode: exitErr.ExitCode(),
-		Stderr:   stderr,
-		Message:  msg,
-		Details:  details,
-	}
 }
 
 // rawBlockingResult is the JSON structure returned by --output-format json.
