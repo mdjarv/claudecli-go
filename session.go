@@ -52,7 +52,7 @@ type Session struct {
 	waited          bool
 	resultReady     chan struct{} // closed when a ResultEvent or fatal error is tracked
 	resultCloseOnce sync.Once
-	readyCh         chan struct{} // closed on first system event (session ready for queries)
+	readyCh         chan struct{} // closed after initialize (or first system event on older CLIs)
 	readyOnce       sync.Once
 }
 
@@ -101,9 +101,12 @@ func (s *Session) prepareQuery() error {
 
 // sendUserMessage marshals and writes a user message with the given content.
 func (s *Session) sendUserMessage(content any) error {
+	s.stateMu.Lock()
+	sid := s.sessionID
+	s.stateMu.Unlock()
 	msg := userMessage{
 		Type:            "user",
-		SessionID:       s.sessionID,
+		SessionID:       sid,
 		Message:         messageBody{Role: "user", Content: content},
 		ParentToolUseID: nil,
 	}

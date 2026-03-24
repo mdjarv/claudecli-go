@@ -199,14 +199,14 @@ func (c *Client) Connect(ctx context.Context, opts ...Option) (*Session, error) 
 		return nil, fmt.Errorf("initialize: %w", err)
 	}
 
-	// Wait for session to become ready (first system event) or process exit.
-	select {
-	case <-session.readyCh:
-	case <-session.done:
-	case <-ctx.Done():
-		cancel()
-		return nil, ctx.Err()
+	// Mark ready immediately — CLI 2.1.81+ defers the system event until first query.
+	// readyOnce guards against double-close if the system event races in on older CLIs.
+	session.readyOnce.Do(func() { close(session.readyCh) })
+	session.stateMu.Lock()
+	if session.state == StateStarting {
+		session.state = StateIdle
 	}
+	session.stateMu.Unlock()
 
 	return session, nil
 }
