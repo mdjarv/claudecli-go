@@ -2,16 +2,36 @@ package claudecli
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
 )
 
-// ErrorDetails contains structured error information parsed from CLI stderr.
-type ErrorDetails struct {
-	Type       string        `json:"type"`
-	Message    string        `json:"message"`
-	RetryAfter time.Duration // parsed from retry_after_seconds if present
+// Sentinel errors for CLI error classification.
+// Use errors.Is to check from any error in the chain (Error, ErrorEvent, etc).
+var (
+	ErrRateLimit  = errors.New("rate limit")
+	ErrAuth       = errors.New("authentication failed")
+	ErrOverloaded = errors.New("API overloaded")
+)
+
+// RateLimitError carries retry timing for rate limit errors.
+// Use errors.As to extract RetryAfter from any error in the chain.
+type RateLimitError struct {
+	RetryAfter time.Duration
+	Message    string
+}
+
+func (e *RateLimitError) Error() string {
+	if e.RetryAfter > 0 {
+		return fmt.Sprintf("rate limit: %s (retry after %s)", e.Message, e.RetryAfter)
+	}
+	return "rate limit: " + e.Message
+}
+
+func (e *RateLimitError) Is(target error) bool {
+	return target == ErrRateLimit
 }
 
 // Error represents a CLI process failure with context.
@@ -19,63 +39,7 @@ type Error struct {
 	ExitCode int
 	Stderr   string
 	Message  string
-	Details  *ErrorDetails
-}
-
-// IsRateLimit returns true if this is a rate limit error.
-func (e *Error) IsRateLimit() bool {
-	return e.Details != nil && e.Details.Type == "rate_limit"
-}
-
-// IsAuth returns true if this is an authentication error.
-func (e *Error) IsAuth() bool {
-	return e.Details != nil && e.Details.Type == "auth"
-}
-
-// IsOverloaded returns true if the API is overloaded.
-func (e *Error) IsOverloaded() bool {
-	return e.Details != nil && e.Details.Type == "overloaded"
-}
-
-// parseErrorDetails tries to extract structured error JSON from stderr.
-// Returns nil if no JSON object is found or parsing fails.
-func parseErrorDetails(stderr string) *ErrorDetails {
-	// Try the whole string first
-	if d := tryParseErrorJSON(stderr); d != nil {
-		return d
-	}
-	// Try each line — stderr may mix text and JSON
-	for _, line := range strings.Split(stderr, "\n") {
-		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, "{") {
-			if d := tryParseErrorJSON(line); d != nil {
-				return d
-			}
-		}
-	}
-	return nil
-}
-
-func tryParseErrorJSON(s string) *ErrorDetails {
-	var raw struct {
-		Type              string  `json:"type"`
-		Message           string  `json:"message"`
-		RetryAfterSeconds float64 `json:"retry_after_seconds"`
-	}
-	if err := json.Unmarshal([]byte(s), &raw); err != nil {
-		return nil
-	}
-	if raw.Type == "" {
-		return nil
-	}
-	d := &ErrorDetails{
-		Type:    raw.Type,
-		Message: raw.Message,
-	}
-	if raw.RetryAfterSeconds > 0 {
-		d.RetryAfter = time.Duration(raw.RetryAfterSeconds * float64(time.Second))
-	}
-	return d
+	class    error // sentinel or *RateLimitError; nil for unclassified
 }
 
 func (e *Error) Error() string {
@@ -86,6 +50,13 @@ func (e *Error) Error() string {
 		return fmt.Sprintf("claudecli: exit %d: %s", e.ExitCode, e.Stderr)
 	}
 	return fmt.Sprintf("claudecli: exit %d", e.ExitCode)
+}
+
+func (e *Error) Unwrap() []error {
+	if e.class != nil {
+		return []error{e.class}
+	}
+	return nil
 }
 
 // UnmarshalError is returned by RunJSON when the response text cannot be
@@ -101,4 +72,63 @@ func (e *UnmarshalError) Error() string {
 
 func (e *UnmarshalError) Unwrap() error {
 	return e.Err
+}
+
+// errorDetails is the internal representation of structured error JSON from CLI stderr.
+type errorDetails struct {
+	typ        string
+	message    string
+	retryAfter time.Duration
+}
+
+// parseErrorDetails tries to extract structured error JSON from stderr.
+// Returns nil if no JSON object is found or parsing fails.
+func parseErrorDetails(stderr string) *errorDetails {
+	if d := tryParseErrorJSON(stderr); d != nil {
+		return d
+	}
+	for _, line := range strings.Split(stderr, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "{") {
+			if d := tryParseErrorJSON(line); d != nil {
+				return d
+			}
+		}
+	}
+	return nil
+}
+
+func tryParseErrorJSON(s string) *errorDetails {
+	var raw struct {
+		Type              string  `json:"type"`
+		Message           string  `json:"message"`
+		RetryAfterSeconds float64 `json:"retry_after_seconds"`
+	}
+	if err := json.Unmarshal([]byte(s), &raw); err != nil {
+		return nil
+	}
+	if raw.Type == "" {
+		return nil
+	}
+	d := &errorDetails{
+		typ:     raw.Type,
+		message: raw.Message,
+	}
+	if raw.RetryAfterSeconds > 0 {
+		d.retryAfter = time.Duration(raw.RetryAfterSeconds * float64(time.Second))
+	}
+	return d
+}
+
+func classifyError(d *errorDetails) error {
+	switch d.typ {
+	case "rate_limit":
+		return &RateLimitError{RetryAfter: d.retryAfter, Message: d.message}
+	case "auth":
+		return ErrAuth
+	case "overloaded":
+		return ErrOverloaded
+	default:
+		return nil
+	}
 }

@@ -13,9 +13,6 @@ import (
 	"time"
 )
 
-// SDKVersion is the version of this Go SDK, sent as an env var to the CLI.
-const SDKVersion = "0.2.0"
-
 // Process represents a running CLI subprocess.
 type Process struct {
 	Stdout io.ReadCloser

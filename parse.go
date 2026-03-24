@@ -14,7 +14,7 @@ import (
 // Safe to call from a goroutine.
 func ParseEvents(r io.Reader, ch chan<- Event) {
 	scanner := bufio.NewScanner(r)
-	scanner.Buffer(make([]byte, 256*1024), 10*1024*1024)
+	scanner.Buffer(make([]byte, 1024*1024), 10*1024*1024)
 
 	var resultText []string
 

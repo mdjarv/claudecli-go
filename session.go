@@ -365,7 +365,7 @@ func (s *Session) readLoop() {
 	stderrLines, stderrDone := scanStderr(s.ctx, s.proc, pump, nil)
 
 	scanner := bufio.NewScanner(s.proc.Stdout)
-	scanner.Buffer(make([]byte, 256*1024), 10*1024*1024)
+	scanner.Buffer(make([]byte, 1024*1024), 10*1024*1024)
 
 	var resultText []string
 

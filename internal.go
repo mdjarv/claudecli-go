@@ -52,21 +52,23 @@ func scanStderr(ctx context.Context, proc *Process, events chan<- Event, callbac
 func processExitError(err error, stderr string) *Error {
 	details := parseErrorDetails(stderr)
 	var msg string
+	var class error
 	if details != nil {
-		msg = details.Message
+		msg = details.message
+		class = classifyError(details)
 	}
 	exitErr, ok := err.(*exec.ExitError)
 	if !ok {
 		if msg == "" {
 			msg = err.Error()
 		}
-		return &Error{ExitCode: -1, Stderr: stderr, Message: msg, Details: details}
+		return &Error{ExitCode: -1, Stderr: stderr, Message: msg, class: class}
 	}
 	return &Error{
 		ExitCode: exitErr.ExitCode(),
 		Stderr:   stderr,
 		Message:  msg,
-		Details:  details,
+		class:    class,
 	}
 }
 

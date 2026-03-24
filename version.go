@@ -10,6 +10,9 @@ import (
 	"time"
 )
 
+// SDKVersion is the version of this Go SDK, sent as CLAUDE_AGENT_SDK_VERSION to the CLI.
+const SDKVersion = "0.2.0"
+
 // MinCLIVersion is the minimum Claude CLI version required by this SDK.
 const MinCLIVersion = "2.0.0"
 

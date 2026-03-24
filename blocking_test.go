@@ -310,11 +310,8 @@ func TestProcessExitError_NonExitErrorWithDetails(t *testing.T) {
 	if err.Message != "Rate limit exceeded" {
 		t.Errorf("message = %q, want 'Rate limit exceeded'", err.Message)
 	}
-	if err.Details == nil {
-		t.Fatal("expected non-nil Details")
-	}
-	if !err.IsRateLimit() {
-		t.Error("expected IsRateLimit() = true")
+	if !errors.Is(err, ErrRateLimit) {
+		t.Error("expected errors.Is(err, ErrRateLimit)")
 	}
 }
 
@@ -337,11 +334,8 @@ func TestProcessExitError_NonExitErrorDetailsMessage(t *testing.T) {
 	if err.Message != "Invalid API key" {
 		t.Errorf("message = %q, want 'Invalid API key'", err.Message)
 	}
-	if err.Details == nil {
-		t.Fatal("expected non-nil Details")
-	}
-	if !err.IsAuth() {
-		t.Error("expected IsAuth() = true")
+	if !errors.Is(err, ErrAuth) {
+		t.Error("expected errors.Is(err, ErrAuth)")
 	}
 }
 

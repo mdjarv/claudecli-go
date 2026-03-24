@@ -443,6 +443,17 @@ text, _, err := client.RunText(ctx, prompt)
 // Empty output (no text events received)
 if errors.Is(err, claudecli.ErrEmptyOutput) { ... }
 
+// Classify API errors with sentinel errors
+if errors.Is(err, claudecli.ErrRateLimit) { ... }
+if errors.Is(err, claudecli.ErrAuth) { ... }
+if errors.Is(err, claudecli.ErrOverloaded) { ... }
+
+// Extract retry timing from rate limit errors
+var rlErr *claudecli.RateLimitError
+if errors.As(err, &rlErr) {
+    time.Sleep(rlErr.RetryAfter)
+}
+
 // CLI process failure with exit code and stderr
 var cliErr *claudecli.Error
 if errors.As(err, &cliErr) {
@@ -475,8 +486,8 @@ claudecli-go/
   session.go     Interactive session with bidirectional control protocol
   control.go     Control message types, ContentBlock/ImageSource for multimodal input
   blocking.go    RunBlocking/RunBlockingJSON — non-streaming JSON output mode
-  version.go     CLI version checking with semver parsing
-  error.go       Typed Error (ExitCode, Stderr, Message), UnmarshalError (RawText)
+  version.go     SDKVersion, MinCLIVersion, CLI version checking with semver parsing
+  error.go       Sentinel errors (ErrRateLimit, ErrAuth, ErrOverloaded), RateLimitError, Error, UnmarshalError
 ```
 
 **Layers:**

@@ -1,6 +1,7 @@
 package claudecli
 
 import (
+	"errors"
 	"os/exec"
 	"testing"
 )
@@ -71,8 +72,8 @@ func TestProcessExitError_ExitCode(t *testing.T) {
 	if result.Message != "API overloaded" {
 		t.Errorf("message = %q, want 'API overloaded'", result.Message)
 	}
-	if !result.IsOverloaded() {
-		t.Error("expected IsOverloaded() = true")
+	if !errors.Is(result, ErrOverloaded) {
+		t.Error("expected errors.Is(result, ErrOverloaded)")
 	}
 }
 
