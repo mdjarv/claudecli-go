@@ -176,6 +176,9 @@ type ResultEvent struct {
 	Usage            Usage
 	// ModelUsage contains per-model usage keyed by model ID.
 	ModelUsage map[string]ModelUsage
+	// ContextSnapshot captures usage from the last API call's stream events.
+	// Nil if no stream_event events were observed.
+	ContextSnapshot *ContextSnapshot
 }
 
 func (*ResultEvent) event() {}
@@ -248,6 +251,17 @@ type ModelUsage struct {
 	MaxOutputTokens   int
 	WebSearchRequests int
 	WebFetchRequests  int
+}
+
+// ContextSnapshot captures token usage from the last API call in a streaming session.
+// Populated from the last message_start + message_delta pair observed in stream_event events.
+// Nil on ResultEvent when WithIncludePartialMessages is not enabled.
+type ContextSnapshot struct {
+	InputTokens              int
+	CacheReadInputTokens     int
+	CacheCreationInputTokens int
+	OutputTokens             int
+	ContextWindow            int
 }
 
 // ContextManagementEvent is emitted when the CLI compresses or summarizes

@@ -1090,3 +1090,181 @@ func TestParseErrorEventFixture(t *testing.T) {
 		t.Fatalf("expected ResultEvent last, got %T", last)
 	}
 }
+
+func TestContextSnapshotFromStreamEvents(t *testing.T) {
+	input := `{"type":"system","session_id":"s1","model":"opus"}
+{"type":"stream_event","uuid":"u1","session_id":"s1","event":{"type":"message_start","message":{"model":"claude-opus-4-20250514","usage":{"input_tokens":100,"cache_read_input_tokens":5000,"cache_creation_input_tokens":200}}}}
+{"type":"stream_event","uuid":"u2","session_id":"s1","event":{"type":"content_block_delta","delta":{"text":"hi"}}}
+{"type":"stream_event","uuid":"u3","session_id":"s1","event":{"type":"message_delta","usage":{"output_tokens":42}}}
+{"type":"result","subtype":"success","total_cost_usd":0.05,"usage":{"input_tokens":100,"output_tokens":42,"cache_read_input_tokens":5000,"cache_creation_input_tokens":200},"modelUsage":{"claude-opus-4-20250514":{"inputTokens":100,"outputTokens":42,"cacheReadInputTokens":5000,"cacheCreationInputTokens":200,"contextWindow":200000}}}
+`
+	ch := make(chan Event, 64)
+	go func() {
+		ParseEvents(strings.NewReader(input), ch)
+		close(ch)
+	}()
+
+	var result *ResultEvent
+	for e := range ch {
+		if r, ok := e.(*ResultEvent); ok {
+			result = r
+		}
+	}
+	if result == nil {
+		t.Fatal("no ResultEvent")
+	}
+	cs := result.ContextSnapshot
+	if cs == nil {
+		t.Fatal("ContextSnapshot is nil")
+	}
+	if cs.InputTokens != 100 {
+		t.Errorf("InputTokens = %d, want 100", cs.InputTokens)
+	}
+	if cs.CacheReadInputTokens != 5000 {
+		t.Errorf("CacheReadInputTokens = %d, want 5000", cs.CacheReadInputTokens)
+	}
+	if cs.CacheCreationInputTokens != 200 {
+		t.Errorf("CacheCreationInputTokens = %d, want 200", cs.CacheCreationInputTokens)
+	}
+	if cs.OutputTokens != 42 {
+		t.Errorf("OutputTokens = %d, want 42", cs.OutputTokens)
+	}
+	if cs.ContextWindow != 200000 {
+		t.Errorf("ContextWindow = %d, want 200000", cs.ContextWindow)
+	}
+}
+
+func TestContextSnapshotNilWithoutStreamEvents(t *testing.T) {
+	input := `{"type":"system","session_id":"s1","model":"opus"}
+{"type":"assistant","message":{"content":[{"type":"text","text":"hello"}]}}
+{"type":"result","subtype":"success","total_cost_usd":0.01,"usage":{"input_tokens":10,"output_tokens":5}}
+`
+	ch := make(chan Event, 64)
+	go func() {
+		ParseEvents(strings.NewReader(input), ch)
+		close(ch)
+	}()
+
+	var result *ResultEvent
+	for e := range ch {
+		if r, ok := e.(*ResultEvent); ok {
+			result = r
+		}
+	}
+	if result == nil {
+		t.Fatal("no ResultEvent")
+	}
+	if result.ContextSnapshot != nil {
+		t.Errorf("ContextSnapshot should be nil, got %+v", result.ContextSnapshot)
+	}
+}
+
+func TestContextSnapshotResetOnMessageStart(t *testing.T) {
+	input := `{"type":"system","session_id":"s1","model":"opus"}
+{"type":"stream_event","uuid":"u1","session_id":"s1","event":{"type":"message_start","message":{"model":"claude-opus-4-20250514","usage":{"input_tokens":50,"cache_read_input_tokens":1000,"cache_creation_input_tokens":100}}}}
+{"type":"stream_event","uuid":"u2","session_id":"s1","event":{"type":"message_delta","usage":{"output_tokens":10}}}
+{"type":"stream_event","uuid":"u3","session_id":"s1","event":{"type":"message_start","message":{"model":"claude-opus-4-20250514","usage":{"input_tokens":300,"cache_read_input_tokens":8000,"cache_creation_input_tokens":500}}}}
+{"type":"stream_event","uuid":"u4","session_id":"s1","event":{"type":"message_delta","usage":{"output_tokens":77}}}
+{"type":"result","subtype":"success","total_cost_usd":0.1,"usage":{"input_tokens":350,"output_tokens":87},"modelUsage":{"claude-opus-4-20250514":{"inputTokens":350,"outputTokens":87,"contextWindow":200000}}}
+`
+	ch := make(chan Event, 64)
+	go func() {
+		ParseEvents(strings.NewReader(input), ch)
+		close(ch)
+	}()
+
+	var result *ResultEvent
+	for e := range ch {
+		if r, ok := e.(*ResultEvent); ok {
+			result = r
+		}
+	}
+	if result == nil {
+		t.Fatal("no ResultEvent")
+	}
+	cs := result.ContextSnapshot
+	if cs == nil {
+		t.Fatal("ContextSnapshot is nil")
+	}
+	// Should have values from the LAST message_start/delta pair.
+	if cs.InputTokens != 300 {
+		t.Errorf("InputTokens = %d, want 300", cs.InputTokens)
+	}
+	if cs.CacheReadInputTokens != 8000 {
+		t.Errorf("CacheReadInputTokens = %d, want 8000", cs.CacheReadInputTokens)
+	}
+	if cs.CacheCreationInputTokens != 500 {
+		t.Errorf("CacheCreationInputTokens = %d, want 500", cs.CacheCreationInputTokens)
+	}
+	if cs.OutputTokens != 77 {
+		t.Errorf("OutputTokens = %d, want 77", cs.OutputTokens)
+	}
+}
+
+func TestContextSnapshotMessageStartOnly(t *testing.T) {
+	input := `{"type":"system","session_id":"s1","model":"opus"}
+{"type":"stream_event","uuid":"u1","session_id":"s1","event":{"type":"message_start","message":{"model":"claude-opus-4-20250514","usage":{"input_tokens":250,"cache_read_input_tokens":3000}}}}
+{"type":"result","subtype":"success","total_cost_usd":0.01,"usage":{"input_tokens":250,"output_tokens":0},"modelUsage":{"claude-opus-4-20250514":{"inputTokens":250,"contextWindow":200000}}}
+`
+	ch := make(chan Event, 64)
+	go func() {
+		ParseEvents(strings.NewReader(input), ch)
+		close(ch)
+	}()
+
+	var result *ResultEvent
+	for e := range ch {
+		if r, ok := e.(*ResultEvent); ok {
+			result = r
+		}
+	}
+	if result == nil {
+		t.Fatal("no ResultEvent")
+	}
+	cs := result.ContextSnapshot
+	if cs == nil {
+		t.Fatal("ContextSnapshot is nil")
+	}
+	if cs.InputTokens != 250 {
+		t.Errorf("InputTokens = %d, want 250", cs.InputTokens)
+	}
+	if cs.CacheReadInputTokens != 3000 {
+		t.Errorf("CacheReadInputTokens = %d, want 3000", cs.CacheReadInputTokens)
+	}
+	if cs.OutputTokens != 0 {
+		t.Errorf("OutputTokens = %d, want 0", cs.OutputTokens)
+	}
+}
+
+func TestContextSnapshotModelMismatch(t *testing.T) {
+	input := `{"type":"system","session_id":"s1","model":"opus"}
+{"type":"stream_event","uuid":"u1","session_id":"s1","event":{"type":"message_start","message":{"model":"claude-unknown","usage":{"input_tokens":100}}}}
+{"type":"stream_event","uuid":"u2","session_id":"s1","event":{"type":"message_delta","usage":{"output_tokens":20}}}
+{"type":"result","subtype":"success","total_cost_usd":0.01,"usage":{"input_tokens":100,"output_tokens":20},"modelUsage":{"claude-opus-4-20250514":{"inputTokens":100,"outputTokens":20,"contextWindow":200000}}}
+`
+	ch := make(chan Event, 64)
+	go func() {
+		ParseEvents(strings.NewReader(input), ch)
+		close(ch)
+	}()
+
+	var result *ResultEvent
+	for e := range ch {
+		if r, ok := e.(*ResultEvent); ok {
+			result = r
+		}
+	}
+	if result == nil {
+		t.Fatal("no ResultEvent")
+	}
+	cs := result.ContextSnapshot
+	if cs == nil {
+		t.Fatal("ContextSnapshot is nil")
+	}
+	if cs.ContextWindow != 0 {
+		t.Errorf("ContextWindow = %d, want 0 (model mismatch)", cs.ContextWindow)
+	}
+	if cs.InputTokens != 100 {
+		t.Errorf("InputTokens = %d, want 100", cs.InputTokens)
+	}
+}

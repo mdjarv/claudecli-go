@@ -387,6 +387,8 @@ func (s *Session) readLoop() {
 	scanner.Buffer(make([]byte, 1024*1024), 10*1024*1024)
 
 	var resultText []string
+	var snapshot *ContextSnapshot
+	var lastModel string
 
 	for scanner.Scan() {
 		line := scanner.Bytes()
@@ -415,6 +417,8 @@ func (s *Session) readLoop() {
 			switch raw.Subtype {
 			case "init", "":
 				resultText = nil
+				snapshot = nil
+				lastModel = ""
 				ev := &InitEvent{SessionID: raw.SessionID, Model: raw.Model, Tools: raw.Tools}
 				s.stateMu.Lock()
 				s.sessionID = raw.SessionID
@@ -464,6 +468,12 @@ func (s *Session) readLoop() {
 			}
 
 		case "result":
+			modelUsage := convertModelUsage(raw.ModelUsage)
+			if snapshot != nil && lastModel != "" {
+				if mu, ok := modelUsage[lastModel]; ok {
+					snapshot.ContextWindow = mu.ContextWindow
+				}
+			}
 			ev := &ResultEvent{
 				Text:             strings.Join(resultText, ""),
 				Subtype:          raw.Subtype,
@@ -473,9 +483,12 @@ func (s *Session) readLoop() {
 				CostUSD:          raw.CostUSD,
 				SessionID:        raw.SessionID,
 				Usage:            raw.Usage.toUsage(),
-				ModelUsage:       convertModelUsage(raw.ModelUsage),
+				ModelUsage:       modelUsage,
+				ContextSnapshot:  snapshot,
 			}
 			resultText = nil
+			snapshot = nil
+			lastModel = ""
 			s.trackState(ev)
 			pumpSend(ev)
 
@@ -488,6 +501,7 @@ func (s *Session) readLoop() {
 				SessionID: raw.SessionID,
 				Event:     raw.Event,
 			})
+			updateContextSnapshot(raw.Event, &snapshot, &lastModel)
 
 		case "error":
 			pumpSend(parseErrorEvent(&raw))

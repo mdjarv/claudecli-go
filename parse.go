@@ -17,6 +17,8 @@ func ParseEvents(r io.Reader, ch chan<- Event) {
 	scanner.Buffer(make([]byte, 1024*1024), 10*1024*1024)
 
 	var resultText []string
+	var snapshot *ContextSnapshot
+	var lastModel string
 
 	for scanner.Scan() {
 		line := scanner.Bytes()
@@ -64,6 +66,12 @@ func ParseEvents(r io.Reader, ch chan<- Event) {
 			}
 
 		case "result":
+			modelUsage := convertModelUsage(raw.ModelUsage)
+			if snapshot != nil && lastModel != "" {
+				if mu, ok := modelUsage[lastModel]; ok {
+					snapshot.ContextWindow = mu.ContextWindow
+				}
+			}
 			ch <- &ResultEvent{
 				Text:             strings.Join(resultText, ""),
 				Subtype:          raw.Subtype,
@@ -73,7 +81,8 @@ func ParseEvents(r io.Reader, ch chan<- Event) {
 				CostUSD:          raw.CostUSD,
 				SessionID:        raw.SessionID,
 				Usage:            raw.Usage.toUsage(),
-				ModelUsage:       convertModelUsage(raw.ModelUsage),
+				ModelUsage:       modelUsage,
+				ContextSnapshot:  snapshot,
 			}
 			// Result is the terminal event. Return immediately to avoid
 			// blocking on scanner.Scan() if the CLI keeps stdout open (known bug).
@@ -100,6 +109,7 @@ func ParseEvents(r io.Reader, ch chan<- Event) {
 				SessionID: raw.SessionID,
 				Event:     raw.Event,
 			}
+			updateContextSnapshot(raw.Event, &snapshot, &lastModel)
 
 		case "error":
 			ch <- parseErrorEvent(&raw)
@@ -373,4 +383,62 @@ func convertModelUsage(raw map[string]rawModelUsage) map[string]ModelUsage {
 		}
 	}
 	return out
+}
+
+// rawInnerEventType peeks at just the "type" field of an inner stream event.
+type rawInnerEventType struct {
+	Type string `json:"type"`
+}
+
+type rawMessageStart struct {
+	Message struct {
+		Model string       `json:"model"`
+		Usage rawInnerUsage `json:"usage"`
+	} `json:"message"`
+}
+
+type rawMessageDelta struct {
+	Usage rawInnerUsage `json:"usage"`
+}
+
+type rawInnerUsage struct {
+	InputTokens              int `json:"input_tokens"`
+	CacheReadInputTokens     int `json:"cache_read_input_tokens"`
+	CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
+	OutputTokens             int `json:"output_tokens"`
+}
+
+// updateContextSnapshot inspects a raw inner stream event for message_start or
+// message_delta usage data. On message_start it resets the snapshot and records
+// the model. On message_delta it fills in output_tokens.
+func updateContextSnapshot(innerEvent json.RawMessage, snapshot **ContextSnapshot, lastModel *string) {
+	if len(innerEvent) == 0 {
+		return
+	}
+	var peek rawInnerEventType
+	if err := json.Unmarshal(innerEvent, &peek); err != nil {
+		return
+	}
+	switch peek.Type {
+	case "message_start":
+		var ms rawMessageStart
+		if err := json.Unmarshal(innerEvent, &ms); err != nil {
+			return
+		}
+		*snapshot = &ContextSnapshot{
+			InputTokens:              ms.Message.Usage.InputTokens,
+			CacheReadInputTokens:     ms.Message.Usage.CacheReadInputTokens,
+			CacheCreationInputTokens: ms.Message.Usage.CacheCreationInputTokens,
+		}
+		*lastModel = ms.Message.Model
+	case "message_delta":
+		if *snapshot == nil {
+			return
+		}
+		var md rawMessageDelta
+		if err := json.Unmarshal(innerEvent, &md); err != nil {
+			return
+		}
+		(*snapshot).OutputTokens = md.Usage.OutputTokens
+	}
 }
