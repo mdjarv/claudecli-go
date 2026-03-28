@@ -3,6 +3,7 @@ package claudecli
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -200,7 +201,8 @@ func TestPoolConcurrentAddRemove(t *testing.T) {
 		wg.Add(1)
 		go func(n int) {
 			defer wg.Done()
-			s, _ := poolSim(t, "sess-conc-"+string(rune('A'+n)))
+			id := fmt.Sprintf("sess-conc-%d", n)
+			s, _ := poolSim(t, id)
 			_ = pool.Add(s, SessionMeta{Name: "conc"})
 		}(i)
 	}
@@ -230,10 +232,8 @@ func TestPoolSessionClose(t *testing.T) {
 	sim2.send(`{"type":"result","subtype":"success","session_id":"sess-dies","total_cost_usd":0,"usage":{"input_tokens":0,"output_tokens":0}}`)
 	sim2.bidi.StdoutWriter.Close()
 
-	// Give forwarder time to notice the close.
-	time.Sleep(50 * time.Millisecond)
-
-	// The alive session should still forward events.
+	// Send a text event from the alive session. It may arrive before or after
+	// the dying session's events drain — just keep reading until we see it.
 	sim1.send(`{"type":"assistant","message":{"content":[{"type":"text","text":"still here"}]}}`)
 
 	timeout := time.After(2 * time.Second)
@@ -303,7 +303,9 @@ func TestSendAgentMessage(t *testing.T) {
 	pool.Add(s2, SessionMeta{Name: "receiver-agent"})
 
 	// Drain stdin concurrently — io.Pipe is synchronous so writes block
-	// until the read side consumes.
+	// until the read side consumes. Close the pipe at test end to unblock.
+	t.Cleanup(func() { sim2.bidi.StdinReader.Close() })
+
 	type stdinMsg struct {
 		msg map[string]any
 	}
