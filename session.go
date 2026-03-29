@@ -551,6 +551,12 @@ func (s *Session) readLoop() {
 
 		case "error":
 			pumpSend(parseErrorEvent(&raw))
+
+		default:
+			pumpSend(&UnknownEvent{
+				Type: raw.Type,
+				Raw:  append(json.RawMessage(nil), line...),
+			})
 		}
 	}
 

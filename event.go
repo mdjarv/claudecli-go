@@ -307,3 +307,15 @@ func (*ContextManagementEvent) event() {}
 func (e *ContextManagementEvent) String() string {
 	return fmt.Sprintf("ContextManagementEvent{len: %d}", len(e.Raw))
 }
+
+// UnknownEvent is emitted when the CLI sends an event type not recognized
+// by this SDK version. Preserves the full raw JSON for inspection.
+type UnknownEvent struct {
+	Type string
+	Raw  json.RawMessage
+}
+
+func (*UnknownEvent) event() {}
+func (e *UnknownEvent) String() string {
+	return fmt.Sprintf("UnknownEvent{Type: %s, len: %d}", e.Type, len(e.Raw))
+}

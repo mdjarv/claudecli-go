@@ -1268,3 +1268,42 @@ func TestContextSnapshotModelMismatch(t *testing.T) {
 		t.Errorf("InputTokens = %d, want 100", cs.InputTokens)
 	}
 }
+
+func TestParseUnknownEventType(t *testing.T) {
+	input := `{"type":"system","session_id":"test","model":"sonnet"}
+{"type":"subagent_progress","agent_id":"abc123","data":"working"}
+{"type":"assistant","message":{"content":[{"type":"text","text":"hello"}]}}
+{"type":"result","subtype":"success","total_cost_usd":0.01,"usage":{"input_tokens":10,"output_tokens":5}}
+`
+	ch := make(chan Event, 64)
+	go func() {
+		ParseEvents(strings.NewReader(input), ch)
+		close(ch)
+	}()
+
+	var events []Event
+	for e := range ch {
+		events = append(events, e)
+	}
+
+	var unknown *UnknownEvent
+	for _, e := range events {
+		if u, ok := e.(*UnknownEvent); ok {
+			unknown = u
+		}
+	}
+	if unknown == nil {
+		t.Fatal("no UnknownEvent found")
+	}
+	if unknown.Type != "subagent_progress" {
+		t.Errorf("Type = %q, want %q", unknown.Type, "subagent_progress")
+	}
+	// Verify Raw is valid JSON with original fields.
+	var parsed map[string]any
+	if err := json.Unmarshal(unknown.Raw, &parsed); err != nil {
+		t.Fatalf("failed to unmarshal Raw: %v", err)
+	}
+	if parsed["agent_id"] != "abc123" {
+		t.Errorf("agent_id = %v, want %q", parsed["agent_id"], "abc123")
+	}
+}

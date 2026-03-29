@@ -116,6 +116,12 @@ func ParseEvents(r io.Reader, ch chan<- Event) {
 
 		case "error":
 			ch <- parseErrorEvent(&raw)
+
+		default:
+			ch <- &UnknownEvent{
+				Type: raw.Type,
+				Raw:  append(json.RawMessage(nil), line...),
+			}
 		}
 	}
 
