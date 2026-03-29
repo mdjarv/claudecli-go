@@ -1812,3 +1812,98 @@ func TestSessionSendMessageFromIdle(t *testing.T) {
 		t.Fatalf("SendMessage from idle should succeed: %v", err)
 	}
 }
+
+func TestSessionUnknownEventForwarded(t *testing.T) {
+	sim := newSessionSim()
+	client := NewWithExecutor(sim.bidi)
+
+	go func() {
+		sim.handleInitAndReady(t)
+
+		sim.readStdin(t) // consume user message
+
+		// Send an unknown event type between text and result.
+		sim.send(`{"type":"system","session_id":"test"}`)
+		sim.send(`{"type":"assistant","message":{"content":[{"type":"text","text":"hi"}]}}`)
+		sim.send(`{"type":"subagent_start","agent_id":"sub1","prompt":"do stuff"}`)
+		sim.send(`{"type":"result","subtype":"success","total_cost_usd":0.01,"duration_ms":100,"usage":{"input_tokens":10,"output_tokens":5}}`)
+		sim.bidi.StdoutWriter.Close()
+	}()
+
+	session, err := client.Connect(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close()
+
+	if err := session.Query("test"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Collect events until result arrives.
+	var unknown *UnknownEvent
+	for ev := range session.Events() {
+		if u, ok := ev.(*UnknownEvent); ok {
+			unknown = u
+		}
+		if _, ok := ev.(*ResultEvent); ok {
+			break
+		}
+	}
+	if unknown == nil {
+		t.Fatal("no UnknownEvent received in session")
+	}
+	if unknown.Type != "subagent_start" {
+		t.Errorf("Type = %q, want %q", unknown.Type, "subagent_start")
+	}
+	var parsed map[string]any
+	if err := json.Unmarshal(unknown.Raw, &parsed); err != nil {
+		t.Fatalf("failed to unmarshal Raw: %v", err)
+	}
+	if parsed["agent_id"] != "sub1" {
+		t.Errorf("agent_id = %v, want %q", parsed["agent_id"], "sub1")
+	}
+}
+
+func TestSessionUserEventForwarded(t *testing.T) {
+	sim := newSessionSim()
+	client := NewWithExecutor(sim.bidi)
+
+	go func() {
+		sim.handleInitAndReady(t)
+		sim.readStdin(t)
+
+		sim.send(`{"type":"system","session_id":"test"}`)
+		sim.send(`{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_read1","name":"Read","input":{"path":"go.mod"}}]}}`)
+		sim.send(`{"type":"user","message":{"role":"user","content":[{"tool_use_id":"toolu_read1","type":"tool_result","content":"module foo/bar"}]},"parent_tool_use_id":null,"session_id":"test","uuid":"u1","timestamp":"2026-01-01T00:00:00Z"}`)
+		sim.send(`{"type":"assistant","message":{"content":[{"type":"text","text":"done"}]}}`)
+		sim.send(`{"type":"result","subtype":"success","total_cost_usd":0.01,"duration_ms":100,"usage":{"input_tokens":10,"output_tokens":5}}`)
+		sim.bidi.StdoutWriter.Close()
+	}()
+
+	session, err := client.Connect(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close()
+
+	if err := session.Query("test"); err != nil {
+		t.Fatal(err)
+	}
+
+	var ue *UserEvent
+	for ev := range session.Events() {
+		if u, ok := ev.(*UserEvent); ok {
+			ue = u
+		}
+		if _, ok := ev.(*ResultEvent); ok {
+			break
+		}
+	}
+	if ue == nil {
+		t.Fatal("no UserEvent received in session")
+	}
+	if len(ue.Content) != 1 || ue.Content[0].ToolUseID != "toolu_read1" {
+		t.Errorf("unexpected content: %v", ue.Content)
+	}
+}

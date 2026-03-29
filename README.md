@@ -317,6 +317,24 @@ case *claudecli.ToolUseEvent:
     }
 ```
 
+### Subagent activity tracking
+
+`UserEvent` makes subagent execution visible. Use `ParentToolUseID` to correlate events with their parent Agent tool call, and `AgentResult` to detect completion:
+
+```go
+case *claudecli.UserEvent:
+    if e.ParentToolUseID != "" {
+        // This event belongs to the subagent spawned by that Agent tool call.
+        fmt.Printf("  [subagent %s] tool result\n", e.ParentToolUseID)
+    }
+    if e.AgentResult != nil {
+        fmt.Printf("  Agent %s (%s) completed: %d tokens, %dms, %d tool calls\n",
+            e.AgentResult.AgentID, e.AgentResult.AgentType,
+            e.AgentResult.TotalTokens, e.AgentResult.TotalDurationMs,
+            e.AgentResult.TotalToolUseCount)
+    }
+```
+
 ## Multimodal input
 
 Send images and documents alongside text in interactive sessions:
@@ -449,6 +467,8 @@ All events implement the sealed `Event` interface. Use type switches or type ass
 | `*TextEvent`       | Assistant text output.                                                                                                      |
 | `*ToolUseEvent`    | Tool invocation with name and input. `ParseAgentInput()` returns typed `*AgentInput` for Agent tool calls.                  |
 | `*ToolResultEvent` | Result from a tool invocation. `Content` is `[]ToolContent` supporting text and image blocks. `Text()` returns concatenated text. |
+| `*UserEvent`       | Tool result or subagent message fed back to the model. `Content` is `[]UserContent` (text or tool_result blocks). `ParentToolUseID` links subagent events to the parent Agent tool call (empty for top-level). `AgentResult` (non-nil on subagent completion) carries `AgentID`, `AgentType`, `Prompt`, `TotalDurationMs`, `TotalTokens`, `TotalToolUseCount`. `Text()` returns concatenated text. |
+| `*UnknownEvent`    | Unrecognized event type from CLI. `Type` is the raw type string, `Raw` is the full JSON line. Forward-compat catch-all. |
 | `*RateLimitEvent`  | Rate limit status change. Fields: `Status`, `Utilization`, `ResetsAt`, `RateLimitType`, overage fields, `UUID`, `SessionID`, `Raw`. |
 | `*StderrEvent`     | A line of stderr output from the CLI process.                                                                               |
 | `*ResultEvent`     | Session complete. Text, cost, duration, usage, `StopReason`, `StructuredOutput`, `ModelUsage` (per-model context window, token limits, web search/fetch counts), `ContextSnapshot` (per-API-call usage from last `message_start`/`message_delta`; requires `WithIncludePartialMessages`; nil otherwise). Synthesized if CLI exits cleanly without one. |

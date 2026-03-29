@@ -1268,3 +1268,182 @@ func TestContextSnapshotModelMismatch(t *testing.T) {
 		t.Errorf("InputTokens = %d, want 100", cs.InputTokens)
 	}
 }
+
+func TestParseUnknownEventType(t *testing.T) {
+	input := `{"type":"system","session_id":"test","model":"sonnet"}
+{"type":"subagent_progress","agent_id":"abc123","data":"working"}
+{"type":"assistant","message":{"content":[{"type":"text","text":"hello"}]}}
+{"type":"result","subtype":"success","total_cost_usd":0.01,"usage":{"input_tokens":10,"output_tokens":5}}
+`
+	ch := make(chan Event, 64)
+	go func() {
+		ParseEvents(strings.NewReader(input), ch)
+		close(ch)
+	}()
+
+	var events []Event
+	for e := range ch {
+		events = append(events, e)
+	}
+
+	var unknown *UnknownEvent
+	for _, e := range events {
+		if u, ok := e.(*UnknownEvent); ok {
+			unknown = u
+		}
+	}
+	if unknown == nil {
+		t.Fatal("no UnknownEvent found")
+	}
+	if unknown.Type != "subagent_progress" {
+		t.Errorf("Type = %q, want %q", unknown.Type, "subagent_progress")
+	}
+	// Verify Raw is valid JSON with original fields.
+	var parsed map[string]any
+	if err := json.Unmarshal(unknown.Raw, &parsed); err != nil {
+		t.Fatalf("failed to unmarshal Raw: %v", err)
+	}
+	if parsed["agent_id"] != "abc123" {
+		t.Errorf("agent_id = %v, want %q", parsed["agent_id"], "abc123")
+	}
+}
+
+func TestParseUserEventToolResult(t *testing.T) {
+	input := `{"type":"system","session_id":"test","model":"sonnet"}
+{"type":"user","message":{"role":"user","content":[{"tool_use_id":"toolu_abc","type":"tool_result","content":"file contents here"}]},"parent_tool_use_id":null,"session_id":"test","uuid":"uuid1","timestamp":"2026-03-29T18:36:37.512Z"}
+{"type":"result","subtype":"success","total_cost_usd":0.01,"usage":{"input_tokens":10,"output_tokens":5}}
+`
+	ch := make(chan Event, 64)
+	go func() {
+		ParseEvents(strings.NewReader(input), ch)
+		close(ch)
+	}()
+
+	var events []Event
+	for e := range ch {
+		events = append(events, e)
+	}
+
+	var ue *UserEvent
+	for _, e := range events {
+		if u, ok := e.(*UserEvent); ok {
+			ue = u
+		}
+	}
+	if ue == nil {
+		t.Fatal("no UserEvent found")
+	}
+	if ue.ParentToolUseID != "" {
+		t.Errorf("ParentToolUseID = %q, want empty (null)", ue.ParentToolUseID)
+	}
+	if ue.UUID != "uuid1" {
+		t.Errorf("UUID = %q, want %q", ue.UUID, "uuid1")
+	}
+	if ue.Timestamp != "2026-03-29T18:36:37.512Z" {
+		t.Errorf("Timestamp = %q", ue.Timestamp)
+	}
+	if len(ue.Content) != 1 {
+		t.Fatalf("Content len = %d, want 1", len(ue.Content))
+	}
+	block := ue.Content[0]
+	if block.Type != "tool_result" {
+		t.Errorf("block.Type = %q, want %q", block.Type, "tool_result")
+	}
+	if block.ToolUseID != "toolu_abc" {
+		t.Errorf("block.ToolUseID = %q, want %q", block.ToolUseID, "toolu_abc")
+	}
+	if len(block.Content) != 1 || block.Content[0].Text != "file contents here" {
+		t.Errorf("block.Content = %v, want text 'file contents here'", block.Content)
+	}
+	if ue.AgentResult != nil {
+		t.Error("AgentResult should be nil for non-agent tool results")
+	}
+}
+
+func TestParseUserEventSubagentPrompt(t *testing.T) {
+	input := `{"type":"system","session_id":"test","model":"sonnet"}
+{"type":"user","message":{"role":"user","content":[{"type":"text","text":"Read go.mod"}]},"parent_tool_use_id":"toolu_agent1","session_id":"test","uuid":"uuid2","timestamp":"2026-03-29T18:36:53.939Z"}
+{"type":"result","subtype":"success","total_cost_usd":0.01,"usage":{"input_tokens":10,"output_tokens":5}}
+`
+	ch := make(chan Event, 64)
+	go func() {
+		ParseEvents(strings.NewReader(input), ch)
+		close(ch)
+	}()
+
+	var ue *UserEvent
+	for e := range ch {
+		if u, ok := e.(*UserEvent); ok {
+			ue = u
+		}
+	}
+	if ue == nil {
+		t.Fatal("no UserEvent found")
+	}
+	if ue.ParentToolUseID != "toolu_agent1" {
+		t.Errorf("ParentToolUseID = %q, want %q", ue.ParentToolUseID, "toolu_agent1")
+	}
+	if len(ue.Content) != 1 || ue.Content[0].Type != "text" {
+		t.Fatalf("unexpected content: %v", ue.Content)
+	}
+	if ue.Text() != "Read go.mod" {
+		t.Errorf("Text() = %q, want %q", ue.Text(), "Read go.mod")
+	}
+}
+
+func TestParseUserEventAgentCompletion(t *testing.T) {
+	input := `{"type":"system","session_id":"test","model":"sonnet"}
+{"type":"user","message":{"role":"user","content":[{"tool_use_id":"toolu_agent1","type":"tool_result","content":[{"type":"text","text":"module is foo/bar"}]}]},"parent_tool_use_id":null,"session_id":"test","uuid":"uuid3","timestamp":"2026-03-29T18:36:56.915Z","tool_use_result":{"status":"completed","prompt":"Read go.mod","agentId":"agent123","agentType":"Explore","content":[{"type":"text","text":"module is foo/bar"}],"totalDurationMs":2975,"totalTokens":21825,"totalToolUseCount":1}}
+{"type":"result","subtype":"success","total_cost_usd":0.01,"usage":{"input_tokens":10,"output_tokens":5}}
+`
+	ch := make(chan Event, 64)
+	go func() {
+		ParseEvents(strings.NewReader(input), ch)
+		close(ch)
+	}()
+
+	var ue *UserEvent
+	for e := range ch {
+		if u, ok := e.(*UserEvent); ok {
+			ue = u
+		}
+	}
+	if ue == nil {
+		t.Fatal("no UserEvent found")
+	}
+	if ue.ParentToolUseID != "" {
+		t.Errorf("ParentToolUseID = %q, want empty", ue.ParentToolUseID)
+	}
+	if ue.AgentResult == nil {
+		t.Fatal("AgentResult is nil")
+	}
+	ar := ue.AgentResult
+	if ar.Status != "completed" {
+		t.Errorf("Status = %q, want %q", ar.Status, "completed")
+	}
+	if ar.AgentID != "agent123" {
+		t.Errorf("AgentID = %q, want %q", ar.AgentID, "agent123")
+	}
+	if ar.AgentType != "Explore" {
+		t.Errorf("AgentType = %q, want %q", ar.AgentType, "Explore")
+	}
+	if ar.Prompt != "Read go.mod" {
+		t.Errorf("Prompt = %q, want %q", ar.Prompt, "Read go.mod")
+	}
+	if ar.TotalDurationMs != 2975 {
+		t.Errorf("TotalDurationMs = %d, want 2975", ar.TotalDurationMs)
+	}
+	if ar.TotalTokens != 21825 {
+		t.Errorf("TotalTokens = %d, want 21825", ar.TotalTokens)
+	}
+	if ar.TotalToolUseCount != 1 {
+		t.Errorf("TotalToolUseCount = %d, want 1", ar.TotalToolUseCount)
+	}
+	if len(ar.Content) != 1 || ar.Content[0].Text != "module is foo/bar" {
+		t.Errorf("Content = %v", ar.Content)
+	}
+	// The tool_result content block should also be parsed.
+	if len(ue.Content) != 1 || ue.Content[0].ToolUseID != "toolu_agent1" {
+		t.Errorf("Content blocks = %v", ue.Content)
+	}
+}

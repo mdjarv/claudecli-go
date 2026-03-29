@@ -166,6 +166,74 @@ func (e *ToolResultEvent) Text() string {
 	return strings.Join(parts, "")
 }
 
+// UserEvent is emitted when the CLI feeds a message back to the model.
+//
+// The CLI emits these as "type":"user" JSONL events. They appear in two contexts:
+//
+//  1. Tool results — after any tool executes, this carries the output back to the
+//     model for its next turn. Correlate with the preceding ToolUseEvent via
+//     Content[].ToolUseID.
+//
+//  2. Subagent activity — when the Agent tool spawns a subagent, its prompt dispatch,
+//     internal tool results, and final completion all appear as UserEvents with
+//     ParentToolUseID set to the Agent ToolUseEvent.ID.
+//
+// Use ParentToolUseID to distinguish subagent events from top-level tool results:
+//   - Empty: top-level tool result or user input
+//   - Non-empty: belongs to the subagent spawned by that Agent tool call
+//
+// When AgentResult is non-nil, this event completes a subagent execution and
+// contains its metadata (agent type, duration, token usage).
+type UserEvent struct {
+	Content         []UserContent
+	ParentToolUseID string
+	AgentResult     *AgentResult
+	SessionID       string
+	UUID            string
+	Timestamp       string
+}
+
+func (*UserEvent) event() {}
+func (e *UserEvent) String() string {
+	if e.AgentResult != nil {
+		return fmt.Sprintf("UserEvent{AgentResult: %s, ParentToolUseID: %s}", e.AgentResult.AgentID, e.ParentToolUseID)
+	}
+	return fmt.Sprintf("UserEvent{Blocks: %d, ParentToolUseID: %s}", len(e.Content), e.ParentToolUseID)
+}
+
+// Text returns the concatenated text of all text content blocks.
+func (e *UserEvent) Text() string {
+	var parts []string
+	for _, b := range e.Content {
+		if b.Type == "text" && b.Text != "" {
+			parts = append(parts, b.Text)
+		}
+	}
+	return strings.Join(parts, "")
+}
+
+// UserContent represents a content block in a user message.
+// Type is "text" for prompt/text content, or "tool_result" for tool output.
+type UserContent struct {
+	Type      string        // "text" or "tool_result"
+	Text      string        // populated when Type == "text"
+	ToolUseID string        // populated when Type == "tool_result"
+	Content   []ToolContent // tool result content; populated when Type == "tool_result"
+}
+
+// AgentResult contains metadata from a completed subagent execution.
+// Present on UserEvent when the event carries the final output of an Agent tool call.
+type AgentResult struct {
+	Status            string
+	Prompt            string
+	AgentID           string
+	AgentType         string
+	Content           []ToolContent
+	TotalDurationMs   int
+	TotalTokens       int
+	TotalToolUseCount int
+}
+
 // RateLimitEvent is emitted when the CLI reports rate limit status changes.
 // Status is "allowed", "allowed_warning" (approaching limit), or "rejected" (limit hit).
 type RateLimitEvent struct {
@@ -306,4 +374,16 @@ type ContextManagementEvent struct {
 func (*ContextManagementEvent) event() {}
 func (e *ContextManagementEvent) String() string {
 	return fmt.Sprintf("ContextManagementEvent{len: %d}", len(e.Raw))
+}
+
+// UnknownEvent is emitted when the CLI sends an event type not recognized
+// by this SDK version. Preserves the full raw JSON for inspection.
+type UnknownEvent struct {
+	Type string
+	Raw  json.RawMessage
+}
+
+func (*UnknownEvent) event() {}
+func (e *UnknownEvent) String() string {
+	return fmt.Sprintf("UnknownEvent{Type: %s, len: %d}", e.Type, len(e.Raw))
 }
