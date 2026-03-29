@@ -117,6 +117,9 @@ func ParseEvents(r io.Reader, ch chan<- Event) {
 		case "error":
 			ch <- parseErrorEvent(&raw)
 
+		case "user":
+			ch <- parseUserEvent(&raw)
+
 		default:
 			ch <- &UnknownEvent{
 				Type: raw.Type,
@@ -282,8 +285,11 @@ type rawEvent struct {
 	// system event (compact_boundary subtype)
 	CompactMetadata json.RawMessage `json:"compact_metadata,omitempty"`
 
-	// assistant event
-	Message *rawMessage `json:"message,omitempty"`
+	// assistant + user events
+	Message         *rawMessage     `json:"message,omitempty"`
+	ParentToolUseID *string         `json:"parent_tool_use_id,omitempty"`
+	Timestamp       string          `json:"timestamp,omitempty"`
+	ToolUseResult   json.RawMessage `json:"tool_use_result,omitempty"`
 
 	// result event
 	Result           string          `json:"result,omitempty"`
@@ -453,4 +459,68 @@ func updateContextSnapshot(innerEvent json.RawMessage, snapshot **ContextSnapsho
 		}
 		(*snapshot).OutputTokens = md.Usage.OutputTokens
 	}
+}
+
+func parseUserEvent(raw *rawEvent) *UserEvent {
+	ev := &UserEvent{
+		SessionID: raw.SessionID,
+		UUID:      raw.UUID,
+		Timestamp: raw.Timestamp,
+	}
+	if raw.ParentToolUseID != nil {
+		ev.ParentToolUseID = *raw.ParentToolUseID
+	}
+
+	if raw.Message != nil {
+		for _, block := range raw.Message.Content {
+			uc := UserContent{Type: block.Type}
+			switch block.Type {
+			case "text":
+				uc.Text = block.Text
+			case "tool_result":
+				uc.ToolUseID = block.ToolUseID
+				uc.Content = extractContent(block.Content)
+			}
+			ev.Content = append(ev.Content, uc)
+		}
+	}
+
+	if len(raw.ToolUseResult) > 0 {
+		ev.AgentResult = parseAgentResult(raw.ToolUseResult)
+	}
+
+	return ev
+}
+
+type rawAgentResult struct {
+	Status            string       `json:"status"`
+	Prompt            string       `json:"prompt"`
+	AgentID           string       `json:"agentId"`
+	AgentType         string       `json:"agentType"`
+	Content           []rawContent `json:"content"`
+	TotalDurationMs   int          `json:"totalDurationMs"`
+	TotalTokens       int          `json:"totalTokens"`
+	TotalToolUseCount int          `json:"totalToolUseCount"`
+}
+
+func parseAgentResult(data json.RawMessage) *AgentResult {
+	var raw rawAgentResult
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return nil
+	}
+	ar := &AgentResult{
+		Status:            raw.Status,
+		Prompt:            raw.Prompt,
+		AgentID:           raw.AgentID,
+		AgentType:         raw.AgentType,
+		TotalDurationMs:   raw.TotalDurationMs,
+		TotalTokens:       raw.TotalTokens,
+		TotalToolUseCount: raw.TotalToolUseCount,
+	}
+	for _, block := range raw.Content {
+		if block.Type == "text" {
+			ar.Content = append(ar.Content, ToolContent{Type: "text", Text: block.Text})
+		}
+	}
+	return ar
 }

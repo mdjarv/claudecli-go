@@ -552,6 +552,9 @@ func (s *Session) readLoop() {
 		case "error":
 			pumpSend(parseErrorEvent(&raw))
 
+		case "user":
+			pumpSend(parseUserEvent(&raw))
+
 		default:
 			pumpSend(&UnknownEvent{
 				Type: raw.Type,
