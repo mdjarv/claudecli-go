@@ -242,6 +242,26 @@ The CLI receives the message immediately but processes it at a safe boundary (be
 
 **Concurrency**: writes to stdin are mutex-serialized, so concurrent `SendMessage` calls are safe. Under extreme write volume the OS pipe buffer (64KB on Linux) provides natural backpressure — `SendMessage` blocks until the CLI drains stdin. If the pipe fills while the CLI is waiting for a control response (permission prompt), this could theoretically deadlock. In practice this requires dozens of queued messages and is unlikely for normal usage patterns.
 
+**Delivery confirmation**: by default, `SendMessage` is fire-and-forget — you write to stdin with no acknowledgment. Enable `WithReplayUserMessages()` to have the CLI echo each user message back on stdout as a `UserEvent` with `IsReplay=true`. This confirms the CLI has read and accepted the message:
+
+```go
+session, err := client.Connect(ctx,
+    claudecli.WithReplayUserMessages(),
+)
+
+session.Query("Start the refactor")
+session.SendMessage("Also update the tests")
+
+for event := range session.Events() {
+    switch e := event.(type) {
+    case *claudecli.UserEvent:
+        if e.IsReplay {
+            fmt.Printf("CLI confirmed: %s\n", e.Text())
+        }
+    }
+}
+```
+
 ### User input (AskUserQuestion)
 
 When Claude calls the `AskUserQuestion` tool, it arrives as a `can_use_tool` control request. Use `WithUserInput` to handle these with a dedicated callback instead of routing them through `WithCanUseTool`:
@@ -314,8 +334,13 @@ When a session spawns a sub-agent, the `ToolUseEvent` has `Name: "Agent"`. Use `
 case *claudecli.ToolUseEvent:
     if agent := e.ParseAgentInput(); agent != nil {
         fmt.Printf("Agent: %s (%s) — %s\n", agent.Name, agent.SubagentType, agent.Description)
+        if agent.Isolation == "worktree" {
+            fmt.Println("  running in isolated git worktree")
+        }
     }
 ```
+
+`AgentInput` fields: `Description`, `Prompt`, `SubagentType`, `Name`, `RunInBackground`, `Model`, `Isolation` (`"worktree"` for git worktree isolation), `Mode` (permission mode: `"plan"`, `"acceptEdits"`, etc.), `TeamName` (team name for spawning).
 
 ### Subagent activity tracking
 
@@ -538,7 +563,7 @@ All events implement the sealed `Event` interface. Use type switches or type ass
 | `WithDebugFile(string)`              | Write CLI debug logs to a file path.                                                                  |
 | `WithDisableSlashCommands()`         | Disable all slash command / skill processing in prompts.                                              |
 | `WithFileCheckpointing()`            | Enable SDK file checkpointing via `CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING` env var.                |
-| `WithReplayUserMessages()`           | Echo user messages back on stdout as `UserEvent` with `IsReplay=true`. Confirms message delivery. Sessions only. |
+| `WithReplayUserMessages()`           | Echo user messages back on stdout as `UserEvent` with `IsReplay=true`, confirming message delivery. Useful for tracking `SendMessage` acknowledgment during active turns. Sessions only. |
 
 Options set at call time **replace** (not merge with) client-level defaults.
 
