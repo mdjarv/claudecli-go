@@ -505,12 +505,15 @@ All events implement the sealed `Event` interface. Use type switches or type ass
 | `WithDisallowedTools(...string)`     | Disallowed tools. Same comma/dedup behavior as `WithTools`.                                           |
 | `WithBuiltinTools(...string)`        | Restrict available built-in tools. `"default"` for all, `""` for none, or names like `"Bash"`, `"Edit"`. |
 | `WithPermissionMode(PermissionMode)` | Permission mode (`PermissionDefault`, `PermissionPlan`, `PermissionAcceptEdits`, `PermissionBypass`, `PermissionDontAsk`, `PermissionAuto`). |
+| `WithDangerouslySkipPermissions()`   | Bypass all permission checks. Emits both `--allow-dangerously-skip-permissions` and `--dangerously-skip-permissions`. Only for sandboxed environments. |
+| `WithBare()`                         | Minimal mode: skip hooks, LSP, plugin sync, attribution, auto-memory, background prefetches, keychain reads, CLAUDE.md auto-discovery. |
 | `WithJSONSchema(string)`             | JSON schema for structured output validation.                                                         |
 | `WithMaxBudget(float64)`             | Maximum cost budget in USD.                                                                           |
 | `WithMaxTurns(int)`                  | Maximum agentic turns before stopping.                                                                |
 | `WithWorkDir(string)`                | Working directory for the CLI process.                                                                |
 | `WithAddDirs(...string)`             | Additional directories to allow tool access to.                                                       |
 | `WithSessionID(string)`              | Resume a specific session.                                                                            |
+| `WithSessionName(string)`            | Display name for the session (shown in `/resume` and terminal title).                                 |
 | `WithForkSession()`                  | Fork from the session (requires `WithSessionID`).                                                     |
 | `WithContinue()`                     | Continue the most recent session.                                                                     |
 | `WithEffort(EffortLevel)`            | Effort level (`EffortLow`, `EffortMedium`, `EffortHigh`, `EffortMax`).                                |
@@ -532,6 +535,8 @@ All events implement the sealed `Event` interface. Use type switches or type ass
 | `WithExtraArgs(map[string]string)`   | Arbitrary `--key value` flags for forward compatibility. Empty value emits flag only.                  |
 | `WithUser(string)`                   | User identifier passed to the CLI.                                                                    |
 | `WithStderrCallback(func(string))`   | Called per stderr line in addition to `StderrEvent` emission.                                         |
+| `WithDebugFile(string)`              | Write CLI debug logs to a file path.                                                                  |
+| `WithDisableSlashCommands()`         | Disable all slash command / skill processing in prompts.                                              |
 | `WithFileCheckpointing()`            | Enable SDK file checkpointing via `CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING` env var.                |
 
 Options set at call time **replace** (not merge with) client-level defaults.

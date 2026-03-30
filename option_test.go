@@ -288,6 +288,68 @@ func TestBuildArgsResume(t *testing.T) {
 	}
 }
 
+func TestBuildArgsBare(t *testing.T) {
+	args := resolveOptions(nil, []Option{WithBare()}).buildArgs()
+	if !slices.Contains(args, "--bare") {
+		t.Error("missing --bare")
+	}
+}
+
+func TestBuildArgsBareInAllBuilders(t *testing.T) {
+	opts := resolveOptions(nil, []Option{WithBare()})
+	for name, args := range map[string][]string{
+		"buildArgs":        opts.buildArgs(),
+		"buildBlockingArgs": opts.buildBlockingArgs(),
+		"buildSessionArgs": opts.buildSessionArgs(),
+	} {
+		if !slices.Contains(args, "--bare") {
+			t.Errorf("--bare missing from %s", name)
+		}
+	}
+}
+
+func TestBuildArgsDangerouslySkipPermissions(t *testing.T) {
+	args := resolveOptions(nil, []Option{WithDangerouslySkipPermissions()}).buildArgs()
+	if !slices.Contains(args, "--allow-dangerously-skip-permissions") {
+		t.Error("missing --allow-dangerously-skip-permissions")
+	}
+	if !slices.Contains(args, "--dangerously-skip-permissions") {
+		t.Error("missing --dangerously-skip-permissions")
+	}
+}
+
+func TestBuildArgsSessionName(t *testing.T) {
+	args := resolveOptions(nil, []Option{WithSessionName("my-task")}).buildArgs()
+	if v, ok := argValue(args, "--name"); !ok || v != "my-task" {
+		t.Errorf("missing or wrong --name: %q", v)
+	}
+}
+
+func TestBuildSessionArgsSessionName(t *testing.T) {
+	opts := resolveOptions(nil, []Option{
+		WithSessionName("my-task"),
+		WithSessionID("sess-123"),
+	})
+	args := opts.buildSessionArgs()
+	if v, ok := argValue(args, "--name"); !ok || v != "my-task" {
+		t.Errorf("missing or wrong --name in session args: %q", v)
+	}
+}
+
+func TestBuildArgsDebugFile(t *testing.T) {
+	args := resolveOptions(nil, []Option{WithDebugFile("/tmp/debug.log")}).buildArgs()
+	if v, ok := argValue(args, "--debug-file"); !ok || v != "/tmp/debug.log" {
+		t.Errorf("missing or wrong --debug-file: %q", v)
+	}
+}
+
+func TestBuildArgsDisableSlashCommands(t *testing.T) {
+	args := resolveOptions(nil, []Option{WithDisableSlashCommands()}).buildArgs()
+	if !slices.Contains(args, "--disable-slash-commands") {
+		t.Error("missing --disable-slash-commands")
+	}
+}
+
 func TestBuildArgsExtraArgs(t *testing.T) {
 	args := resolveOptions(nil, []Option{WithExtraArgs(map[string]string{
 		"custom-flag": "value1",

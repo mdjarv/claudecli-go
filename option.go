@@ -45,6 +45,7 @@ type options struct {
 
 	// session
 	sessionID       string
+	sessionName     string
 	forkSession     bool
 	continueSession bool
 	resume          string
@@ -75,6 +76,10 @@ type options struct {
 	user                    string
 	stderrCallback          func(string)
 	enableFileCheckpointing bool
+	bare                    bool
+	dangerouslySkipPerms    bool
+	disableSlashCommands    bool
+	debugFile               string
 
 	// session callbacks
 	canUseTool     ToolPermissionFunc
@@ -155,6 +160,20 @@ func WithEffort(level EffortLevel) Option         { return func(o *options) { o.
 func WithEnv(env map[string]string) Option        { return func(o *options) { o.env = env } }
 func WithResume(sessionID string) Option          { return func(o *options) { o.resume = sessionID } }
 func WithExtraArgs(args map[string]string) Option { return func(o *options) { o.extraArgs = args } }
+
+// WithBare enables minimal mode: skip hooks, LSP, plugin sync, attribution,
+// auto-memory, background prefetches, keychain reads, and CLAUDE.md auto-discovery.
+func WithBare() Option { return func(o *options) { o.bare = true } }
+
+// WithDangerouslySkipPermissions bypasses all permission checks.
+// Emits both --allow-dangerously-skip-permissions and --dangerously-skip-permissions.
+// Only use in sandboxed environments with no internet access.
+func WithDangerouslySkipPermissions() Option {
+	return func(o *options) { o.dangerouslySkipPerms = true }
+}
+func WithSessionName(name string) Option { return func(o *options) { o.sessionName = name } }
+func WithDebugFile(path string) Option   { return func(o *options) { o.debugFile = path } }
+func WithDisableSlashCommands() Option   { return func(o *options) { o.disableSlashCommands = true } }
 func WithUser(user string) Option                 { return func(o *options) { o.user = user } }
 func WithTimeout(d time.Duration) Option          { return func(o *options) { o.timeout = d } }
 func WithStderrCallback(fn func(string)) Option   { return func(o *options) { o.stderrCallback = fn } }
@@ -283,6 +302,9 @@ func (o *options) appendToolArgs(args *[]string) {
 	if o.permissionMode != "" {
 		*args = append(*args, "--permission-mode", string(o.permissionMode))
 	}
+	if o.dangerouslySkipPerms {
+		*args = append(*args, "--allow-dangerously-skip-permissions", "--dangerously-skip-permissions")
+	}
 }
 
 func (o *options) appendOutputArgs(args *[]string) {
@@ -301,6 +323,9 @@ func (o *options) appendOutputArgs(args *[]string) {
 }
 
 func (o *options) appendSessionArgs(args *[]string) {
+	if o.sessionName != "" {
+		*args = append(*args, "--name", o.sessionName)
+	}
 	if o.sessionID != "" {
 		*args = append(*args, "--session-id", o.sessionID)
 		if o.forkSession {
@@ -359,6 +384,15 @@ func (o *options) appendExecArgs(args *[]string) {
 	if o.effort != "" {
 		*args = append(*args, "--effort", string(o.effort))
 	}
+	if o.bare {
+		*args = append(*args, "--bare")
+	}
+	if o.debugFile != "" {
+		*args = append(*args, "--debug-file", o.debugFile)
+	}
+	if o.disableSlashCommands {
+		*args = append(*args, "--disable-slash-commands")
+	}
 	if o.user != "" {
 		*args = append(*args, "--user", o.user)
 	}
@@ -380,6 +414,9 @@ func (o *options) buildSessionArgs() []string {
 	args = append(args, o.buildCommonArgs()...)
 
 	// Session mode: skip --no-session-persistence, keep session/continue flags
+	if o.sessionName != "" {
+		args = append(args, "--name", o.sessionName)
+	}
 	if o.sessionID != "" {
 		args = append(args, "--session-id", o.sessionID)
 		if o.forkSession {
