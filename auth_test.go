@@ -96,6 +96,14 @@ func TestAuthLoginOptions_Args(t *testing.T) {
 	}
 }
 
+func TestAuthLoginOptions_NoBrowser(t *testing.T) {
+	var cfg authLoginConfig
+	WithNoBrowser()(&cfg)
+	if !cfg.noBrowser {
+		t.Error("expected noBrowser=true")
+	}
+}
+
 func TestAuthLoginOptions_Defaults(t *testing.T) {
 	var cfg authLoginConfig
 	if cfg.method != "" {
@@ -106,5 +114,8 @@ func TestAuthLoginOptions_Defaults(t *testing.T) {
 	}
 	if cfg.email != "" {
 		t.Errorf("default email = %q, want empty", cfg.email)
+	}
+	if cfg.noBrowser {
+		t.Error("default noBrowser should be false")
 	}
 }

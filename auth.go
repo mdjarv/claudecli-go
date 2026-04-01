@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 )
@@ -30,9 +31,10 @@ const (
 
 // authLoginConfig holds resolved login options.
 type authLoginConfig struct {
-	method AuthMethod
-	sso    bool
-	email  string
+	method    AuthMethod
+	sso       bool
+	email     string
+	noBrowser bool
 }
 
 // AuthLoginOption configures AuthLogin behavior.
@@ -51,6 +53,13 @@ func WithSSO() AuthLoginOption {
 // WithLoginEmail pre-populates the email on the login page.
 func WithLoginEmail(email string) AuthLoginOption {
 	return func(c *authLoginConfig) { c.email = email }
+}
+
+// WithNoBrowser suppresses the CLI's automatic browser opening by setting
+// BROWSER=true in the subprocess environment. Callers that already have the
+// login URL (e.g. from LoginProcess.URL) can use this to avoid duplicate tabs.
+func WithNoBrowser() AuthLoginOption {
+	return func(c *authLoginConfig) { c.noBrowser = true }
 }
 
 // LoginProcess represents an in-progress OAuth login.
@@ -123,6 +132,10 @@ func (c *Client) AuthLogin(ctx context.Context, opts ...AuthLoginOption) (*Login
 	}
 
 	cmd := exec.CommandContext(ctx, binary, args...)
+
+	if cfg.noBrowser {
+		cmd.Env = append(os.Environ(), "BROWSER=true")
+	}
 
 	// Merge stdout and stderr — the URL may appear on either.
 	stdout, err := cmd.StdoutPipe()
