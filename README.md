@@ -134,7 +134,11 @@ proc, err := client.AuthLogin(ctx,
     claudecli.WithLoginEmail("user@example.com"),
 )
 fmt.Println("Visit:", proc.URL)
-err = proc.Wait() // blocks until browser auth completes
+
+// If OAuth redirect fails and user has a manual auth code:
+err = proc.SubmitCode("auth-code-from-browser")
+
+err = proc.Wait() // blocks until login completes
 
 // Logout
 err = client.AuthLogout(ctx)
@@ -147,6 +151,13 @@ Package-level shortcuts (`AuthStatus`, `AuthLogin`, `AuthLogout`) use the defaul
 | `WithAuthMethod(method)`  | `AuthMethodClaudeAI` (default) or `AuthMethodConsole` (API billing). |
 | `WithSSO()`               | Force SSO login flow.                |
 | `WithLoginEmail(string)`  | Pre-populate email on login page.    |
+| `WithNoBrowser()`         | Suppress automatic browser opening.  |
+
+| LoginProcess method       | Description                          |
+| ------------------------- | ------------------------------------ |
+| `Wait() error`            | Block until login completes.         |
+| `SubmitCode(string) error`| Send manual auth code to the CLI when OAuth redirect fails. |
+| `Cancel() error`          | Terminate the login process.         |
 
 ## Stream state
 
@@ -656,6 +667,7 @@ claudecli-go/
   session.go     Interactive session with bidirectional control protocol
   control.go     Control message types, ContentBlock/ImageSource for multimodal input
   blocking.go    RunBlocking/RunBlockingJSON — non-streaming JSON output mode
+  auth.go        AuthStatus, AuthLogin (with stdin pipe for manual code entry), AuthLogout, LoginProcess
   pool.go        Pool multi-session registry, FormatAgentMessage, SendAgentMessage
   version.go     SDKVersion, MinCLIVersion, CLI version checking with semver parsing
   error.go       Sentinel errors (ErrInvalidRequest, ErrAuth, ErrBilling, ErrPermission, ErrNotFound, ErrRequestTooLarge, ErrRateLimit, ErrAPI, ErrOverloaded), RateLimitError, Error, UnmarshalError

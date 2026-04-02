@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"strings"
@@ -66,9 +67,10 @@ func WithNoBrowser() AuthLoginOption {
 // The URL field contains the authorization URL for the user to visit.
 // Call Wait to block until the login completes or the context is cancelled.
 type LoginProcess struct {
-	URL  string
-	cmd  *exec.Cmd
-	done chan error
+	URL   string
+	stdin io.WriteCloser
+	cmd   *exec.Cmd
+	done  chan error
 }
 
 // Wait blocks until the login process completes. Returns nil on success.
@@ -76,8 +78,18 @@ func (p *LoginProcess) Wait() error {
 	return <-p.done
 }
 
+// SubmitCode sends a manually-copied authorization code to the CLI process.
+// Use this when the OAuth redirect fails and the CLI prompts for manual entry.
+func (p *LoginProcess) SubmitCode(code string) error {
+	_, err := fmt.Fprintln(p.stdin, code)
+	return err
+}
+
 // Cancel terminates the login process.
 func (p *LoginProcess) Cancel() error {
+	if p.stdin != nil {
+		p.stdin.Close()
+	}
 	if p.cmd.Process != nil {
 		return p.cmd.Process.Kill()
 	}
@@ -144,6 +156,11 @@ func (c *Client) AuthLogin(ctx context.Context, opts ...AuthLoginOption) (*Login
 	}
 	cmd.Stderr = cmd.Stdout // merge stderr into stdout pipe
 
+	stdinPipe, err := cmd.StdinPipe()
+	if err != nil {
+		return nil, fmt.Errorf("auth login: stdin pipe: %w", err)
+	}
+
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("auth login: start: %w", err)
 	}
@@ -169,7 +186,7 @@ func (c *Client) AuthLogin(ctx context.Context, opts ...AuthLoginOption) (*Login
 	// Wait for either the URL, process exit, or context cancellation.
 	select {
 	case url := <-urlCh:
-		lp := &LoginProcess{URL: url, cmd: cmd, done: doneCh}
+		lp := &LoginProcess{URL: url, stdin: stdinPipe, cmd: cmd, done: doneCh}
 		return lp, nil
 	case err := <-doneCh:
 		// Process exited before we got a URL.
