@@ -132,11 +132,12 @@ proc, err := client.AuthLogin(ctx,
     claudecli.WithAuthMethod(claudecli.AuthMethodConsole), // or AuthMethodClaudeAI (default)
     claudecli.WithSSO(),
     claudecli.WithLoginEmail("user@example.com"),
+    claudecli.WithNoBrowser(), // required for SubmitCode
 )
 fmt.Println("Visit:", proc.URL)
 
-// If OAuth redirect fails and user has a manual auth code:
-err = proc.SubmitCode("auth-code-from-browser")
+// User visits the URL and gets a CODE#STATE string from the platform page:
+err = proc.SubmitCode("AUTH_CODE#STATE")
 
 err = proc.Wait() // blocks until login completes
 
@@ -151,12 +152,12 @@ Package-level shortcuts (`AuthStatus`, `AuthLogin`, `AuthLogout`) use the defaul
 | `WithAuthMethod(method)`  | `AuthMethodClaudeAI` (default) or `AuthMethodConsole` (API billing). |
 | `WithSSO()`               | Force SSO login flow.                |
 | `WithLoginEmail(string)`  | Pre-populate email on login page.    |
-| `WithNoBrowser()`         | Suppress automatic browser opening.  |
+| `WithNoBrowser()`         | Suppress browser; required for `SubmitCode`. |
 
 | LoginProcess method       | Description                          |
 | ------------------------- | ------------------------------------ |
 | `Wait() error`            | Block until login completes.         |
-| `SubmitCode(string) error`| Send manual auth code to the CLI when OAuth redirect fails. |
+| `SubmitCode(string) error`| Submit auth code (`CODE#STATE` or just `CODE`) to the CLI's local callback server. Requires `WithNoBrowser`. |
 | `Cancel() error`          | Terminate the login process.         |
 
 ## Stream state

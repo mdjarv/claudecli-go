@@ -6,9 +6,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
+	"time"
 )
 
 // AuthStatusResult represents the authentication state returned by the CLI.
@@ -67,26 +71,70 @@ func WithNoBrowser() AuthLoginOption {
 // The URL field contains the authorization URL for the user to visit.
 // Call Wait to block until the login completes or the context is cancelled.
 type LoginProcess struct {
-	URL   string
-	stdin io.WriteCloser
-	cmd   *exec.Cmd
-	done  chan error
+	URL          string
+	callbackPort int           // port of the CLI's local OAuth callback server
+	tmpDir       string        // temp dir for browser capture script; cleaned up on Wait/Cancel
+	stdin        io.WriteCloser
+	cmd          *exec.Cmd
+	done         chan error
 }
 
 // Wait blocks until the login process completes. Returns nil on success.
 func (p *LoginProcess) Wait() error {
-	return <-p.done
+	err := <-p.done
+	if p.tmpDir != "" {
+		os.RemoveAll(p.tmpDir)
+	}
+	return err
 }
 
-// SubmitCode sends a manually-copied authorization code to the CLI process.
-// Use this when the OAuth redirect fails and the CLI prompts for manual entry.
+// SubmitCode completes the OAuth flow by submitting an authorization code to
+// the CLI's local callback server. The code can be in CODE#STATE format (as
+// shown on the platform page) or just the code (state is extracted from the
+// login URL). Requires WithNoBrowser to have been used when starting the login.
 func (p *LoginProcess) SubmitCode(code string) error {
-	_, err := fmt.Fprintln(p.stdin, code)
-	return err
+	if p.callbackPort == 0 {
+		return fmt.Errorf("callback port not available (requires WithNoBrowser)")
+	}
+
+	// Parse state from the manual URL as default.
+	u, err := url.Parse(p.URL)
+	if err != nil {
+		return fmt.Errorf("parse login URL: %w", err)
+	}
+	state := u.Query().Get("state")
+
+	// Support CODE#STATE format from the platform page.
+	authCode := code
+	if parts := strings.SplitN(code, "#", 2); len(parts) == 2 {
+		authCode = parts[0]
+		state = parts[1]
+	}
+
+	if state == "" {
+		return fmt.Errorf("no state parameter: provide code as CODE#STATE")
+	}
+
+	callbackURL := fmt.Sprintf("http://localhost:%d/callback?code=%s&state=%s",
+		p.callbackPort, url.QueryEscape(authCode), url.QueryEscape(state))
+	resp, err := http.Get(callbackURL)
+	if err != nil {
+		return fmt.Errorf("callback request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("callback returned %d: %s", resp.StatusCode, string(body))
+	}
+	return nil
 }
 
 // Cancel terminates the login process.
 func (p *LoginProcess) Cancel() error {
+	if p.tmpDir != "" {
+		os.RemoveAll(p.tmpDir)
+	}
 	if p.stdin != nil {
 		p.stdin.Close()
 	}
@@ -145,23 +193,37 @@ func (c *Client) AuthLogin(ctx context.Context, opts ...AuthLoginOption) (*Login
 
 	cmd := exec.CommandContext(ctx, binary, args...)
 
+	var tmpDir, urlFile string
 	if cfg.noBrowser {
-		cmd.Env = append(os.Environ(), "BROWSER=true")
+		tmpDir, err = os.MkdirTemp("", "claudecli-auth-*")
+		if err != nil {
+			return nil, fmt.Errorf("auth login: create temp dir: %w", err)
+		}
+		scriptPath, uf, err := writeBrowserCaptureScript(tmpDir)
+		if err != nil {
+			os.RemoveAll(tmpDir)
+			return nil, fmt.Errorf("auth login: %w", err)
+		}
+		urlFile = uf
+		cmd.Env = append(os.Environ(), "BROWSER="+scriptPath)
 	}
 
 	// Merge stdout and stderr — the URL may appear on either.
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
+		os.RemoveAll(tmpDir)
 		return nil, fmt.Errorf("auth login: stdout pipe: %w", err)
 	}
 	cmd.Stderr = cmd.Stdout // merge stderr into stdout pipe
 
 	stdinPipe, err := cmd.StdinPipe()
 	if err != nil {
+		os.RemoveAll(tmpDir)
 		return nil, fmt.Errorf("auth login: stdin pipe: %w", err)
 	}
 
 	if err := cmd.Start(); err != nil {
+		os.RemoveAll(tmpDir)
 		return nil, fmt.Errorf("auth login: start: %w", err)
 	}
 
@@ -173,8 +235,8 @@ func (c *Client) AuthLogin(ctx context.Context, opts ...AuthLoginOption) (*Login
 		scanner := bufio.NewScanner(stdout)
 		for scanner.Scan() {
 			line := scanner.Text()
-			if url := extractLoginURL(line); url != "" {
-				urlCh <- url
+			if u := extractLoginURL(line); u != "" {
+				urlCh <- u
 			}
 		}
 	}()
@@ -185,10 +247,26 @@ func (c *Client) AuthLogin(ctx context.Context, opts ...AuthLoginOption) (*Login
 
 	// Wait for either the URL, process exit, or context cancellation.
 	select {
-	case url := <-urlCh:
-		lp := &LoginProcess{URL: url, stdin: stdinPipe, cmd: cmd, done: doneCh}
+	case loginURL := <-urlCh:
+		var port int
+		if urlFile != "" {
+			autoURL, err := waitForAutoURL(urlFile, 10*time.Second)
+			if err == nil {
+				port, _ = extractCallbackPort(autoURL)
+			}
+			// Non-fatal: port=0 means SubmitCode will return an error.
+		}
+		lp := &LoginProcess{
+			URL:          loginURL,
+			callbackPort: port,
+			tmpDir:       tmpDir,
+			stdin:        stdinPipe,
+			cmd:          cmd,
+			done:         doneCh,
+		}
 		return lp, nil
 	case err := <-doneCh:
+		os.RemoveAll(tmpDir)
 		// Process exited before we got a URL.
 		if err != nil {
 			return nil, fmt.Errorf("auth login: %w", err)
@@ -196,6 +274,7 @@ func (c *Client) AuthLogin(ctx context.Context, opts ...AuthLoginOption) (*Login
 		// Exited successfully without URL — may already be logged in.
 		return nil, nil
 	case <-ctx.Done():
+		os.RemoveAll(tmpDir)
 		_ = cmd.Process.Kill()
 		return nil, ctx.Err()
 	}
@@ -236,5 +315,45 @@ func extractLoginURL(line string) string {
 		return strings.TrimSpace(after)
 	}
 	return ""
+}
+
+// extractCallbackPort parses the CLI's auto-open URL and returns the port from
+// its redirect_uri parameter (e.g. redirect_uri=http://localhost:PORT/callback).
+func extractCallbackPort(autoURL string) (int, error) {
+	u, err := url.Parse(autoURL)
+	if err != nil {
+		return 0, fmt.Errorf("parse auto URL: %w", err)
+	}
+	redirectURI := u.Query().Get("redirect_uri")
+	if redirectURI == "" {
+		return 0, fmt.Errorf("no redirect_uri in auto URL")
+	}
+	ru, err := url.Parse(redirectURI)
+	if err != nil {
+		return 0, fmt.Errorf("parse redirect_uri: %w", err)
+	}
+	portStr := ru.Port()
+	if portStr == "" {
+		return 0, fmt.Errorf("no port in redirect_uri %q", redirectURI)
+	}
+	port, err := strconv.Atoi(portStr)
+	if err != nil {
+		return 0, fmt.Errorf("invalid port %q: %w", portStr, err)
+	}
+	return port, nil
+}
+
+// waitForAutoURL polls for the browser capture file to appear and returns its
+// contents. The CLI writes the auto-open URL to this file via the BROWSER script.
+func waitForAutoURL(urlFile string, timeout time.Duration) (string, error) {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		data, err := os.ReadFile(urlFile)
+		if err == nil && len(data) > 0 {
+			return string(data), nil
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	return "", fmt.Errorf("timed out waiting for browser URL capture")
 }
 
