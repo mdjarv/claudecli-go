@@ -123,21 +123,21 @@ stream := client.Run(ctx, "Quick check",
 Check, login, and logout via the CLI's `auth` subcommands.
 
 ```go
-// Check current auth state
+// Check current auth state (three-state: authenticated/unauthenticated/unknown)
 status, err := client.AuthStatus(ctx)
-fmt.Println(status.Email, status.OrgName, status.SubscriptionType)
+fmt.Println(status.Status, status.Email, status.OrgName)
 
 // Start OAuth login — returns URL for user to visit
 proc, err := client.AuthLogin(ctx,
-    claudecli.WithAuthMethod(claudecli.AuthMethodConsole), // or AuthMethodClaudeAI (default)
-    claudecli.WithSSO(),
-    claudecli.WithLoginEmail("user@example.com"),
     claudecli.WithNoBrowser(), // required for SubmitCode
 )
-fmt.Println("Visit:", proc.URL)
+// Show AutoOpenURL to the user (localhost redirect).
+// After authorizing, the browser redirects to localhost which fails on remote
+// machines. User copies the failed redirect URL and passes it to SubmitCode.
+fmt.Println("Visit:", proc.AutoOpenURL)
 
-// User visits the URL and gets a CODE#STATE string from the platform page:
-err = proc.SubmitCode("AUTH_CODE#STATE")
+// User pastes the redirect URL (http://localhost:PORT/callback?code=X&state=Y):
+err = proc.SubmitCode(redirectURL)
 
 err = proc.Wait() // blocks until login completes
 
@@ -146,6 +146,7 @@ err = client.AuthLogout(ctx)
 ```
 
 Package-level shortcuts (`AuthStatus`, `AuthLogin`, `AuthLogout`) use the default client.
+Use `NewClient([]ClientOption{WithLogger(logger)})` for debug logging.
 
 | Login option              | Description                          |
 | ------------------------- | ------------------------------------ |
@@ -154,10 +155,13 @@ Package-level shortcuts (`AuthStatus`, `AuthLogin`, `AuthLogout`) use the defaul
 | `WithLoginEmail(string)`  | Pre-populate email on login page.    |
 | `WithNoBrowser()`         | Suppress browser; required for `SubmitCode`. |
 
-| LoginProcess method       | Description                          |
+| LoginProcess field/method | Description                          |
 | ------------------------- | ------------------------------------ |
+| `URL`                     | Manual-visit URL (platform.claude.com redirect, shows CODE#STATE). |
+| `AutoOpenURL`             | Browser URL (localhost redirect). Use this for remote/headless setups. |
+| `CallbackPort() int`      | Port of the CLI's local callback server (0 if unavailable). |
+| `SubmitCode(string) error`| Submit auth via localhost callback. Accepts a full redirect URL (`http://localhost:PORT/callback?code=X&state=Y`) or `CODE#STATE`. |
 | `Wait() error`            | Block until login completes.         |
-| `SubmitCode(string) error`| Submit auth code (`CODE#STATE` or just `CODE`) to the CLI's local callback server. Requires `WithNoBrowser`. |
 | `Cancel() error`          | Terminate the login process.         |
 
 ## Stream state
@@ -668,7 +672,7 @@ claudecli-go/
   session.go     Interactive session with bidirectional control protocol
   control.go     Control message types, ContentBlock/ImageSource for multimodal input
   blocking.go    RunBlocking/RunBlockingJSON — non-streaming JSON output mode
-  auth.go        AuthStatus, AuthLogin (with stdin pipe for manual code entry), AuthLogout, LoginProcess
+  auth.go        AuthStatus (defensive three-state parsing), AuthLogin (BROWSER capture + localhost callback), AuthLogout, LoginProcess
   pool.go        Pool multi-session registry, FormatAgentMessage, SendAgentMessage
   version.go     SDKVersion, MinCLIVersion, CLI version checking with semver parsing
   error.go       Sentinel errors (ErrInvalidRequest, ErrAuth, ErrBilling, ErrPermission, ErrNotFound, ErrRequestTooLarge, ErrRateLimit, ErrAPI, ErrOverloaded), RateLimitError, Error, UnmarshalError
