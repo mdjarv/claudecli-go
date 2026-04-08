@@ -422,8 +422,7 @@ func TestParseAuthStatus(t *testing.T) {
 		{
 			name:       "exit 0 non-JSON",
 			output:     "Logged in as user@example.com",
-			wantStatus: AuthStateAuthenticated,
-			wantLogin:  true,
+			wantStatus: AuthStateUnknown,
 		},
 		{
 			name:       "exit non-zero unrecognized output",

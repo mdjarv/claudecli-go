@@ -320,11 +320,24 @@ func TestProcessExitError_NonExitErrorPlainStderr(t *testing.T) {
 	if err.ExitCode != -1 {
 		t.Errorf("exit code = %d, want -1", err.ExitCode)
 	}
-	if err.Message != "broken pipe" {
-		t.Errorf("message = %q, want 'broken pipe'", err.Message)
+	// inferErrorMessage extracts the last non-JSON stderr line as the message,
+	// which is more user-facing than the Go error ("broken pipe").
+	if err.Message != "some stderr" {
+		t.Errorf("message = %q, want 'some stderr'", err.Message)
 	}
 	if err.Stderr != "some stderr" {
 		t.Errorf("stderr = %q", err.Stderr)
+	}
+}
+
+func TestProcessExitError_NonExitErrorEmptyStderr(t *testing.T) {
+	err := processExitError(errors.New("broken pipe"), "")
+	if err.ExitCode != -1 {
+		t.Errorf("exit code = %d, want -1", err.ExitCode)
+	}
+	// With empty stderr, falls back to Go error message.
+	if err.Message != "broken pipe" {
+		t.Errorf("message = %q, want 'broken pipe'", err.Message)
 	}
 }
 

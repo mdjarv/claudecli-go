@@ -160,7 +160,17 @@ func WithWorkDir(dir string) Option               { return func(o *options) { o.
 func WithEffort(level EffortLevel) Option         { return func(o *options) { o.effort = level } }
 func WithEnv(env map[string]string) Option        { return func(o *options) { o.env = env } }
 func WithResume(sessionID string) Option          { return func(o *options) { o.resume = sessionID } }
-func WithExtraArgs(args map[string]string) Option { return func(o *options) { o.extraArgs = args } }
+// WithExtraArgs passes additional CLI flags. Keys are flag names without the
+// leading "--". Flags managed by the SDK (print, output-format, input-format,
+// verbose, model) are rejected with a panic to prevent conflicting arguments.
+func WithExtraArgs(args map[string]string) Option {
+	for k := range args {
+		if reservedFlags[k] {
+			panic(fmt.Sprintf("claudecli: WithExtraArgs: %q is a reserved flag managed by the SDK", k))
+		}
+	}
+	return func(o *options) { o.extraArgs = args }
+}
 
 // WithBare enables minimal mode: skip hooks, LSP, plugin sync, attribution,
 // auto-memory, background prefetches, keychain reads, and CLAUDE.md auto-discovery.
@@ -466,6 +476,15 @@ func normalizeTools(tools []string) []string {
 		}
 	}
 	return result
+}
+
+// reservedFlags are CLI flags managed by the SDK that must not be
+// overridden via WithExtraArgs to prevent undefined behavior.
+var reservedFlags = map[string]bool{
+	"print":         true,
+	"output-format": true,
+	"input-format":  true,
+	"verbose":       true,
 }
 
 func resolveOptions(defaults []Option, overrides []Option) *options {

@@ -52,7 +52,8 @@ func (c *Client) RunBlocking(ctx context.Context, prompt string, opts ...Option)
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		stderrOut, _ = io.ReadAll(proc.Stderr)
+		// Cap stderr to 10 MB to prevent unbounded memory growth.
+		stderrOut, _ = io.ReadAll(io.LimitReader(proc.Stderr, 10*1024*1024))
 	}()
 	stdout, readErr = io.ReadAll(proc.Stdout)
 	wg.Wait()

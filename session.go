@@ -37,6 +37,7 @@ type Session struct {
 	controlTimeout time.Duration
 	initTimeout    time.Duration
 	controlWg      sync.WaitGroup // tracks in-flight handleControlRequest goroutines
+	pump           chan Event     // set by readLoop; sendEvent writes here for ordering
 
 	// callbacks
 	canUseTool ToolPermissionFunc
@@ -395,8 +396,11 @@ func (s *Session) readLoop() {
 	defer s.failPendingRequests()
 
 	// Event pump: buffered intermediary so stdout reading never blocks
-	// on a slow event consumer.
+	// on a slow event consumer. Stored on session so sendEvent (called
+	// from handleControlRequest goroutines) writes through the pump
+	// rather than directly to s.events, preserving event ordering.
 	pump := make(chan Event, 256)
+	s.pump = pump
 	pumpDone := make(chan struct{})
 	go func() {
 		defer close(pumpDone)
@@ -420,7 +424,7 @@ func (s *Session) readLoop() {
 		}
 	}
 
-	stderrLines, stderrDone := scanStderr(s.ctx, s.proc, pump, nil)
+	stderrRing, stderrDone := scanStderr(s.ctx, s.proc, pump, nil)
 
 	scanner := bufio.NewScanner(s.proc.Stdout)
 	scanner.Buffer(make([]byte, 1024*1024), 10*1024*1024)
@@ -586,7 +590,7 @@ func (s *Session) readLoop() {
 	<-stderrDone
 
 	if err := s.proc.Wait(); err != nil {
-		stderr := strings.Join(*stderrLines, "\n")
+		stderr := strings.Join(stderrRing.lines(), "\n")
 		ev := &ErrorEvent{
 			Err:   processExitError(err, stderr),
 			Fatal: true,
@@ -622,7 +626,7 @@ func (s *Session) failPendingRequests() {
 
 func (s *Session) sendEvent(ev Event) {
 	select {
-	case s.events <- ev:
+	case s.pump <- ev:
 	case <-s.ctx.Done():
 	}
 }
@@ -660,6 +664,7 @@ func (s *Session) handleControlResponse(line []byte) {
 		} `json:"response"`
 	}
 	if err := json.Unmarshal(line, &resp); err != nil {
+		s.sendEvent(&ErrorEvent{Err: fmt.Errorf("unmarshal control_response: %w", err)})
 		return
 	}
 

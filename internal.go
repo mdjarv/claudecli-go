@@ -10,8 +10,39 @@ import (
 
 const maxStderrLines = 1000
 
-func scanStderr(ctx context.Context, proc *Process, events chan<- Event, callback func(string)) (*[]string, <-chan struct{}) {
-	var lines []string
+// stderrRing is an O(1)-insert ring buffer for the last N stderr lines.
+type stderrRing struct {
+	buf  []string
+	pos  int
+	full bool
+}
+
+func newStderrRing(cap int) *stderrRing {
+	return &stderrRing{buf: make([]string, cap)}
+}
+
+func (r *stderrRing) add(line string) {
+	r.buf[r.pos] = line
+	r.pos++
+	if r.pos == len(r.buf) {
+		r.pos = 0
+		r.full = true
+	}
+}
+
+// lines returns all collected lines in chronological order.
+func (r *stderrRing) lines() []string {
+	if !r.full {
+		return r.buf[:r.pos]
+	}
+	out := make([]string, len(r.buf))
+	copy(out, r.buf[r.pos:])
+	copy(out[len(r.buf)-r.pos:], r.buf[:r.pos])
+	return out
+}
+
+func scanStderr(ctx context.Context, proc *Process, events chan<- Event, callback func(string)) (*stderrRing, <-chan struct{}) {
+	ring := newStderrRing(maxStderrLines)
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -29,13 +60,7 @@ func scanStderr(ctx context.Context, proc *Process, events chan<- Event, callbac
 		scanner := bufio.NewScanner(proc.Stderr)
 		for scanner.Scan() {
 			line := scanner.Text()
-			if len(lines) < maxStderrLines {
-				lines = append(lines, line)
-			} else {
-				// Keep most recent lines by shifting.
-				copy(lines, lines[1:])
-				lines[len(lines)-1] = line
-			}
+			ring.add(line)
 			if callback != nil {
 				callback(line)
 			}
@@ -46,7 +71,7 @@ func scanStderr(ctx context.Context, proc *Process, events chan<- Event, callbac
 			}
 		}
 	}()
-	return &lines, done
+	return ring, done
 }
 
 func processExitError(err error, stderr string) *Error {
@@ -56,6 +81,9 @@ func processExitError(err error, stderr string) *Error {
 	if details != nil {
 		msg = details.message
 		class = classifyError(details)
+	}
+	if msg == "" {
+		msg = inferErrorMessage(stderr)
 	}
 	exitErr, ok := err.(*exec.ExitError)
 	if !ok {
@@ -70,6 +98,39 @@ func processExitError(err error, stderr string) *Error {
 		Message:  msg,
 		class:    class,
 	}
+}
+
+// inferErrorMessage extracts a human-readable summary from unstructured stderr.
+// Matches common OS-level patterns first, then falls back to the last
+// non-empty, non-JSON line.
+func inferErrorMessage(stderr string) string {
+	lower := strings.ToLower(stderr)
+	switch {
+	case strings.Contains(lower, "command not found"):
+		return "claude binary not found (is it installed and in PATH?)"
+	case strings.Contains(lower, "no such file or directory") && !strings.Contains(lower, "{"):
+		return "file or directory not found (check working directory and binary path)"
+	case strings.Contains(lower, "permission denied"):
+		return "permission denied running claude binary"
+	case strings.Contains(lower, "enoent"):
+		return "file or directory not found (ENOENT)"
+	case strings.Contains(lower, "eacces"):
+		return "permission denied (EACCES)"
+	}
+
+	// Use last non-empty, non-JSON stderr line as the most relevant context.
+	lines := strings.Split(strings.TrimSpace(stderr), "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		line := strings.TrimSpace(lines[i])
+		if line == "" || strings.HasPrefix(line, "{") {
+			continue
+		}
+		if len(line) > 200 {
+			return line[:200] + "..."
+		}
+		return line
+	}
+	return ""
 }
 
 // stripCodeFence removes surrounding markdown code fences from text.

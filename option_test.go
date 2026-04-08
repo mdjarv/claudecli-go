@@ -625,3 +625,21 @@ func TestBuildersOutputUnchangedRegression(t *testing.T) {
 		}
 	}
 }
+
+func TestWithExtraArgsReservedFlagPanics(t *testing.T) {
+	for _, flag := range []string{"print", "output-format", "input-format", "verbose"} {
+		t.Run(flag, func(t *testing.T) {
+			defer func() {
+				if r := recover(); r == nil {
+					t.Errorf("WithExtraArgs(%q) should panic", flag)
+				}
+			}()
+			WithExtraArgs(map[string]string{flag: "val"})
+		})
+	}
+}
+
+func TestWithExtraArgsNonReservedOK(t *testing.T) {
+	// Should not panic.
+	WithExtraArgs(map[string]string{"custom-flag": "val"})
+}

@@ -641,10 +641,14 @@ if errors.As(err, &rlErr) {
 }
 
 // CLI process failure with exit code and stderr
+// Error.Error() returns a concise message (auto-inferred from stderr patterns
+// like "command not found", "permission denied", "no such file or directory").
+// For full stderr, access the Stderr field directly.
 var cliErr *claudecli.Error
 if errors.As(err, &cliErr) {
     fmt.Println(cliErr.ExitCode)
-    fmt.Println(cliErr.Stderr)
+    fmt.Println(cliErr.Message) // concise, auto-inferred from stderr
+    fmt.Println(cliErr.Stderr)  // full stderr output
 }
 
 // RunJSON/RunBlockingJSON failed to parse response as JSON
@@ -675,6 +679,7 @@ claudecli-go/
   auth.go        AuthStatus (defensive three-state parsing), AuthLogin (BROWSER capture + localhost callback), AuthLogout, LoginProcess
   pool.go        Pool multi-session registry, FormatAgentMessage, SendAgentMessage
   version.go     SDKVersion, MinCLIVersion, CLI version checking with semver parsing
+  internal.go    Stderr ring buffer, processExitError with heuristic inference, code fence stripping
   error.go       Sentinel errors (ErrInvalidRequest, ErrAuth, ErrBilling, ErrPermission, ErrNotFound, ErrRequestTooLarge, ErrRateLimit, ErrAPI, ErrOverloaded), RateLimitError, Error, UnmarshalError
 ```
 
@@ -692,3 +697,6 @@ claudecli-go/
 - **No retry/backoff** — `RateLimitEvent` is emitted (with `ResetsAt` timestamp and `RateLimitType`) but the package does not automatically retry or backoff. Consumers must implement their own retry logic.
 - **`stdbuf` recommended on Linux** — `LocalExecutor` uses `stdbuf -oL` for line-buffered stdout on Linux when available, falling back to direct execution without it.
 - **MCP server startup can be slow** — The CLI waits for MCP server connections during the initialize handshake. With many MCP servers configured, this can take 30+ seconds. The `WithInitTimeout` option (default 60s) controls this; increase it if `Connect()` times out.
+- **`WithExtraArgs` validates reserved flags** — Passing `print`, `output-format`, `input-format`, or `verbose` via `WithExtraArgs` panics at construction time to prevent conflicting CLI arguments.
+- **Blocking stderr capped at 10 MB** — `RunBlocking` caps stderr collection at 10 MB. The streaming path uses a 1000-line ring buffer.
+- **`AuthStatus` fail-close** — When the CLI exits 0 with non-JSON output, `AuthStatus` returns `AuthStateUnknown` (not `AuthStateAuthenticated`). Callers should handle this explicitly.

@@ -522,10 +522,10 @@ func parseAuthStatus(output string, cmdErr error) (*AuthStatusResult, error) {
 
 	// Layer 3: exit code fallback.
 	if cmdErr == nil {
-		// Exited 0 but output wasn't JSON — optimistically treat as authenticated.
+		// Exited 0 but output wasn't JSON — cannot determine auth state.
+		// Fail-close: treat as unknown rather than assuming authenticated.
 		return &AuthStatusResult{
-			Status:  AuthStateAuthenticated,
-			LoggedIn: true,
+			Status:  AuthStateUnknown,
 			Message: "exit 0, non-JSON output",
 		}, nil
 	}

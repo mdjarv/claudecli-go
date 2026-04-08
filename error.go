@@ -53,7 +53,11 @@ func (e *Error) Error() string {
 		return fmt.Sprintf("claudecli: exit %d: %s", e.ExitCode, e.Message)
 	}
 	if e.Stderr != "" {
-		return fmt.Sprintf("claudecli: exit %d: %s", e.ExitCode, e.Stderr)
+		s := e.Stderr
+		if len(s) > 256 {
+			s = s[:256] + "... (truncated, full stderr in Error.Stderr)"
+		}
+		return fmt.Sprintf("claudecli: exit %d: %s", e.ExitCode, s)
 	}
 	return fmt.Sprintf("claudecli: exit %d", e.ExitCode)
 }

@@ -2,6 +2,7 @@ package claudecli
 
 import (
 	"errors"
+	"strings"
 	"testing"
 	"time"
 )
@@ -159,6 +160,29 @@ func TestRateLimitError_Error(t *testing.T) {
 	got2 := e2.Error()
 	if got2 != "rate limit: slow down" {
 		t.Errorf("got %q", got2)
+	}
+}
+
+func TestError_ErrorTruncatesLongStderr(t *testing.T) {
+	long := strings.Repeat("x", 500)
+	e := &Error{ExitCode: 1, Stderr: long}
+	got := e.Error()
+	if len(got) > 350 {
+		t.Errorf("Error() not truncated: len=%d", len(got))
+	}
+	if !strings.Contains(got, "truncated") {
+		t.Error("missing truncation marker")
+	}
+}
+
+func TestError_ErrorShortStderrUnchanged(t *testing.T) {
+	e := &Error{ExitCode: 1, Stderr: "short error"}
+	got := e.Error()
+	if !strings.Contains(got, "short error") {
+		t.Errorf("Error() = %q", got)
+	}
+	if strings.Contains(got, "truncated") {
+		t.Error("should not truncate short stderr")
 	}
 }
 

@@ -100,7 +100,7 @@ func (c *Client) Run(ctx context.Context, prompt string, opts ...Option) *Stream
 }
 
 func (c *Client) readProcess(ctx context.Context, proc *Process, events chan<- Event, stderrCallback func(string)) {
-	stderrLines, stderrDone := scanStderr(ctx, proc, events, stderrCallback)
+	stderrRing, stderrDone := scanStderr(ctx, proc, events, stderrCallback)
 
 	// Intercept parsed events to track whether a ResultEvent was emitted
 	parsed := make(chan Event, 64)
@@ -126,7 +126,7 @@ func (c *Client) readProcess(ctx context.Context, proc *Process, events chan<- E
 	<-stderrDone
 
 	if err := proc.Wait(); err != nil {
-		stderr := strings.Join(*stderrLines, "\n")
+		stderr := strings.Join(stderrRing.lines(), "\n")
 		events <- &ErrorEvent{
 			Err:   processExitError(err, stderr),
 			Fatal: true,

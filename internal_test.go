@@ -3,6 +3,7 @@ package claudecli
 import (
 	"errors"
 	"os/exec"
+	"strings"
 	"testing"
 )
 
@@ -74,6 +75,59 @@ func TestProcessExitError_ExitCode(t *testing.T) {
 	}
 	if !errors.Is(result, ErrOverloaded) {
 		t.Error("expected errors.Is(result, ErrOverloaded)")
+	}
+}
+
+func TestInferErrorMessage(t *testing.T) {
+	tests := []struct {
+		name   string
+		stderr string
+		want   string
+	}{
+		{"command not found", "bash: claude: command not found", "claude binary not found (is it installed and in PATH?)"},
+		{"no such file", "/usr/bin/claude: no such file or directory", "file or directory not found (check working directory and binary path)"},
+		{"permission denied", "bash: /usr/bin/claude: Permission denied", "permission denied running claude binary"},
+		{"enoent only", "spawn ENOENT", "file or directory not found (ENOENT)"},
+		{"eacces only", "spawn EACCES", "permission denied (EACCES)"},
+		{"enoent with message", "Error: ENOENT: no such file or directory", "file or directory not found (check working directory and binary path)"},
+		{"eacces with message", "Error: EACCES: permission denied", "permission denied running claude binary"},
+		{"plain text", "something went wrong", "something went wrong"},
+		{"multi-line last wins", "warning: slow\nerror: crash here", "error: crash here"},
+		{"skips JSON lines", "some warning\n" + `{"type":"auth","message":"bad"}`, "some warning"},
+		{"empty", "", ""},
+		{"truncates long line", strings.Repeat("x", 300), strings.Repeat("x", 200) + "..."},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := inferErrorMessage(tt.stderr)
+			if got != tt.want {
+				t.Errorf("inferErrorMessage(%q) = %q, want %q", tt.stderr, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestStderrRing(t *testing.T) {
+	r := newStderrRing(3)
+	r.add("a")
+	r.add("b")
+	got := r.lines()
+	if len(got) != 2 || got[0] != "a" || got[1] != "b" {
+		t.Errorf("partial fill: %v", got)
+	}
+
+	r.add("c")
+	r.add("d") // wraps: ["d", "b", "c"], pos=1, full=true → lines: b, c, d
+	got = r.lines()
+	if len(got) != 3 || got[0] != "b" || got[1] != "c" || got[2] != "d" {
+		t.Errorf("after wrap: %v", got)
+	}
+
+	r.add("e")
+	r.add("f")
+	got = r.lines()
+	if len(got) != 3 || got[0] != "d" || got[1] != "e" || got[2] != "f" {
+		t.Errorf("after double wrap: %v", got)
 	}
 }
 
