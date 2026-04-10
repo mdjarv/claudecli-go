@@ -262,6 +262,13 @@ func (s *Session) QueryMCPStatus() ([]MCPServerStatus, error) {
 	if err != nil {
 		return nil, err
 	}
+	var wrapper struct {
+		MCPServers []MCPServerStatus `json:"mcpServers"`
+	}
+	if err := json.Unmarshal(resp, &wrapper); err == nil && wrapper.MCPServers != nil {
+		return wrapper.MCPServers, nil
+	}
+	// Fall back to bare array (CLI < v2.1.97).
 	var servers []MCPServerStatus
 	if err := json.Unmarshal(resp, &servers); err != nil {
 		return nil, fmt.Errorf("parse mcp_status response: %w", err)

@@ -2149,45 +2149,86 @@ func TestSessionToggleMCPServer(t *testing.T) {
 }
 
 func TestSessionQueryMCPStatus(t *testing.T) {
-	sim := newSessionSim()
-	client := NewWithExecutor(sim.bidi)
+	t.Run("wrapped format", func(t *testing.T) {
+		sim := newSessionSim()
+		client := NewWithExecutor(sim.bidi)
 
-	go func() {
-		sim.handleInitAndReady(t)
+		go func() {
+			sim.handleInitAndReady(t)
 
-		msg := sim.respondSuccessWithBody(t, `[{"name":"my-server","status":"connected"},{"name":"other","status":"disconnected"}]`)
-		request := msg["request"].(map[string]any)
-		if request["subtype"] != "mcp_status" {
-			t.Errorf("expected mcp_status, got %v", request["subtype"])
+			msg := sim.respondSuccessWithBody(t, `{"mcpServers":[{"name":"my-server","status":"connected"},{"name":"other","status":"disconnected"}]}`)
+			request := msg["request"].(map[string]any)
+			if request["subtype"] != "mcp_status" {
+				t.Errorf("expected mcp_status, got %v", request["subtype"])
+			}
+
+			sim.sendResult()
+		}()
+
+		session, err := client.Connect(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer session.Close()
+
+		servers, err := session.QueryMCPStatus()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(servers) != 2 {
+			t.Fatalf("expected 2 servers, got %d", len(servers))
+		}
+		if servers[0].Name != "my-server" || servers[0].Status != "connected" {
+			t.Errorf("unexpected server[0]: %+v", servers[0])
+		}
+		if servers[1].Name != "other" || servers[1].Status != "disconnected" {
+			t.Errorf("unexpected server[1]: %+v", servers[1])
 		}
 
-		sim.sendResult()
-	}()
+		_, err = session.Wait()
+		if err != nil {
+			t.Fatal(err)
+		}
+	})
 
-	session, err := client.Connect(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer session.Close()
+	t.Run("bare array fallback", func(t *testing.T) {
+		sim := newSessionSim()
+		client := NewWithExecutor(sim.bidi)
 
-	servers, err := session.QueryMCPStatus()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(servers) != 2 {
-		t.Fatalf("expected 2 servers, got %d", len(servers))
-	}
-	if servers[0].Name != "my-server" || servers[0].Status != "connected" {
-		t.Errorf("unexpected server[0]: %+v", servers[0])
-	}
-	if servers[1].Name != "other" || servers[1].Status != "disconnected" {
-		t.Errorf("unexpected server[1]: %+v", servers[1])
-	}
+		go func() {
+			sim.handleInitAndReady(t)
 
-	_, err = session.Wait()
-	if err != nil {
-		t.Fatal(err)
-	}
+			msg := sim.respondSuccessWithBody(t, `[{"name":"srv","status":"connected"}]`)
+			request := msg["request"].(map[string]any)
+			if request["subtype"] != "mcp_status" {
+				t.Errorf("expected mcp_status, got %v", request["subtype"])
+			}
+
+			sim.sendResult()
+		}()
+
+		session, err := client.Connect(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer session.Close()
+
+		servers, err := session.QueryMCPStatus()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(servers) != 1 {
+			t.Fatalf("expected 1 server, got %d", len(servers))
+		}
+		if servers[0].Name != "srv" || servers[0].Status != "connected" {
+			t.Errorf("unexpected server[0]: %+v", servers[0])
+		}
+
+		_, err = session.Wait()
+		if err != nil {
+			t.Fatal(err)
+		}
+	})
 }
 
 func TestSessionReconnectMCPServerWait(t *testing.T) {
