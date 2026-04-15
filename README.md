@@ -549,13 +549,14 @@ All events implement the sealed `Event` interface. Use type switches or type ass
 | `*TaskEvent`       | Subagent lifecycle update (system subtypes `task_started`, `task_progress`, `task_notification`). `ToolUseID` links to the parent Agent call. Fields: `TaskID`, `Description`, `TaskType`, `Prompt`, `LastToolName`, `Status`, `Summary`, `TotalTokens`, `ToolUses`, `DurationMs`. |
 | `*ThinkingEvent`   | Extended thinking content. Includes `Signature` for verification. `ParentToolUseID` set when from a subagent.                |
 | `*TextEvent`       | Assistant text output. `ParentToolUseID` set when from a subagent.                                                           |
+| `*TurnEvent`       | New assistant turn started. `Turn` is a 1-based counter, `ToolName` is the first tool in the turn (empty for text-only turns). Only emitted for top-level turns (subagent messages excluded). |
 | `*ToolUseEvent`    | Tool invocation with name and input. `ParseAgentInput()` returns typed `*AgentInput` for Agent tool calls. `ParentToolUseID` set when from a subagent. |
 | `*ToolResultEvent` | Result from a tool invocation. `Content` is `[]ToolContent` supporting text and image blocks. `Text()` returns concatenated text. `ParentToolUseID` set when from a subagent. |
 | `*UserEvent`       | Tool result or subagent message fed back to the model. `Content` is `[]UserContent` (text or tool_result blocks). `ParentToolUseID` links subagent events to the parent Agent tool call (empty for top-level). `AgentResult` (non-nil on subagent completion) carries `AgentID`, `AgentType`, `Prompt`, `TotalDurationMs`, `TotalTokens`, `TotalToolUseCount`. `IsReplay` is true when echoed via `--replay-user-messages`. `Text()` returns concatenated text. |
 | `*UnknownEvent`    | Unrecognized event type from CLI. `Type` is the raw type string (or `"content/<type>"` for unknown content blocks), `Raw` is the full JSON. Forward-compat catch-all — also used for error fallback diagnostics on non-zero exit. |
 | `*RateLimitEvent`  | Rate limit status change. Fields: `Status`, `Utilization`, `ResetsAt`, `RateLimitType`, overage fields, `UUID`, `SessionID`, `Raw`. |
 | `*StderrEvent`     | A line of stderr output from the CLI process.                                                                               |
-| `*ResultEvent`     | Session complete. Text, cost, duration, usage, `StopReason`, `StructuredOutput`, `ModelUsage` (per-model context window, token limits, web search/fetch counts), `ContextSnapshot` (per-API-call usage from last `message_start`/`message_delta`; requires `WithIncludePartialMessages`; nil otherwise). Synthesized if CLI exits cleanly without one. |
+| `*ResultEvent`     | Session complete. Text, cost, duration, usage, `NumTurns`, `StopReason`, `StructuredOutput`, `ModelUsage` (per-model context window, token limits, web search/fetch counts), `ContextSnapshot` (per-API-call usage from last `message_start`/`message_delta`; requires `WithIncludePartialMessages`; nil otherwise). Synthesized if CLI exits cleanly without one. |
 | `*ContextManagementEvent` | Emitted when the CLI compresses or summarizes older turns to fit the context window. `Raw` contains the full JSON payload. |
 | `*ControlRequestEvent` | Control request from CLI (handled internally in sessions).                                                              |
 | `*StreamEvent`     | Partial message update (when `WithIncludePartialMessages` is on).                                                            |
@@ -635,6 +636,13 @@ if errors.Is(err, claudecli.ErrRequestTooLarge) { ... }   // 413 request too lar
 if errors.Is(err, claudecli.ErrRateLimit) { ... }         // 429 rate limited
 if errors.Is(err, claudecli.ErrAPI) { ... }               // 500 internal API error
 if errors.Is(err, claudecli.ErrOverloaded) { ... }        // 529 API overloaded
+if errors.Is(err, claudecli.ErrMaxTurns) { ... }          // max turns reached
+
+// Extract turn count from max turns errors
+var mte *claudecli.MaxTurnsError
+if errors.As(err, &mte) {
+    fmt.Printf("hit max turns: %d\n", mte.Turns)
+}
 
 // Extract retry timing from rate limit errors
 var rlErr *claudecli.RateLimitError
@@ -685,7 +693,7 @@ claudecli-go/
   pool.go        Pool multi-session registry, FormatAgentMessage, SendAgentMessage
   version.go     SDKVersion, MinCLIVersion, CLI version checking with semver parsing
   internal.go    Stderr ring buffer, processExitError with heuristic inference, code fence stripping
-  error.go       Sentinel errors (ErrInvalidRequest, ErrAuth, ErrBilling, ErrPermission, ErrNotFound, ErrRequestTooLarge, ErrRateLimit, ErrAPI, ErrOverloaded), RateLimitError, Error, UnmarshalError
+  error.go       Sentinel errors (ErrInvalidRequest, ErrAuth, ErrBilling, ErrPermission, ErrNotFound, ErrRequestTooLarge, ErrRateLimit, ErrAPI, ErrOverloaded, ErrMaxTurns), RateLimitError, MaxTurnsError, Error, UnmarshalError
 ```
 
 **Layers:**
