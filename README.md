@@ -570,7 +570,6 @@ All events implement the sealed `Event` interface. Use type switches or type ass
 | `WithModel(Model)`                   | Model to use (`ModelHaiku`, `ModelSonnet`, `ModelOpus`). Default: `ModelSonnet`.                      |
 | `WithFallbackModel(Model)`           | Fallback model if primary is unavailable.                                                             |
 | `WithBetas(...string)`               | Beta features to enable.                                                                              |
-| `WithMaxThinkingTokens(int)`         | **Deprecated.** Maximum thinking tokens for extended thinking (pre-4.7 models only; flag removed from current CLI). Use `WithEffort` instead. |
 | `WithSystemPrompt(string)`           | System prompt.                                                                                        |
 | `WithSystemPromptFile(string)`       | Load system prompt from a file.                                                                       |
 | `WithAppendSystemPrompt(string)`     | Append to the default system prompt.                                                                  |
@@ -713,4 +712,3 @@ claudecli-go/
 - **`WithExtraArgs` validates reserved flags** — Passing `print`, `output-format`, `input-format`, or `verbose` via `WithExtraArgs` panics at construction time to prevent conflicting CLI arguments.
 - **Blocking stderr capped at 10 MB** — `RunBlocking` caps stderr collection at 10 MB. The streaming path uses a 1000-line ring buffer.
 - **`AuthStatus` fail-close** — When the CLI exits 0 with non-JSON output, `AuthStatus` returns `AuthStateUnknown` (not `AuthStateAuthenticated`). Callers should handle this explicitly.
-- **`WithMaxThinkingTokens` removed from CLI** — The `--max-thinking-tokens` flag was removed from the Claude Code CLI in the Opus 4.7 era. The option is retained for backward compatibility but will produce an error on current CLI versions. Use `WithEffort` to control reasoning intensity.

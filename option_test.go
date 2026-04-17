@@ -225,14 +225,6 @@ func TestBuildArgsBetas(t *testing.T) {
 	}
 }
 
-func TestBuildArgsMaxThinkingTokens(t *testing.T) {
-	args := resolveOptions(nil, []Option{WithMaxThinkingTokens(4096)}).buildArgs()
-
-	if v, ok := argValue(args, "--max-thinking-tokens"); !ok || v != "4096" {
-		t.Errorf("missing or wrong --max-thinking-tokens: %q", v)
-	}
-}
-
 func TestBuildArgsSettings(t *testing.T) {
 	args := resolveOptions(nil, []Option{WithSettings("/tmp/settings.json")}).buildArgs()
 
