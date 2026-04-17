@@ -40,7 +40,6 @@ These features exist in the TypeScript SDK and we already support them:
 - MCP config, reconnect, toggle, status
 - File checkpointing and rewind
 - Effort levels
-- Max thinking tokens
 - Model/permission mode switching mid-session
 - Task cancellation (`StopTask`)
 - `--include-partial-messages` / `StreamEvent`
