@@ -310,6 +310,22 @@ for event := range session.Events() {
 }
 ```
 
+### Forking an existing session
+
+`WithForkSession` paired with `WithResume` / `WithContinue` / `WithSessionID` runs the CLI against a new session ID seeded with the parent's full history. The parent's session file on disk is not modified. Useful for asking a one-off question against a live session's context without polluting its transcript:
+
+```go
+result, err := client.RunBlocking(ctx, "Summarize this session in 2-4 words.",
+    claudecli.WithResume(parentSessionID),
+    claudecli.WithForkSession(),
+    claudecli.WithModel(claudecli.ModelHaiku),
+)
+// result.SessionID is the fork's new ID (unique from parentSessionID).
+// The parent session file on disk is byte-for-byte unchanged.
+```
+
+Prompt-cache hits on the shared prefix keep forks cheap. The fork writes its own session file to disk — callers that fork repeatedly should plan to clean these up. The parent must have been persisted (started via `Connect`, `WithSessionID`, `WithResume`, or `WithContinue`; `RunBlocking` without any of those defaults to `--no-session-persistence`).
+
 ### User input (AskUserQuestion)
 
 When Claude calls the `AskUserQuestion` tool, it arrives as a `can_use_tool` control request. Use `WithUserInput` to handle these with a dedicated callback instead of routing them through `WithCanUseTool`:
@@ -711,4 +727,5 @@ claudecli-go/
 - **MCP server startup can be slow** — The CLI waits for MCP server connections during the initialize handshake. With many MCP servers configured, this can take 30+ seconds. The `WithInitTimeout` option (default 60s) controls this; increase it if `Connect()` times out.
 - **`WithExtraArgs` validates reserved flags** — Passing `print`, `output-format`, `input-format`, or `verbose` via `WithExtraArgs` panics at construction time to prevent conflicting CLI arguments.
 - **Blocking stderr capped at 10 MB** — `RunBlocking` caps stderr collection at 10 MB. The streaming path uses a 1000-line ring buffer.
+- **Fork-session needs a persisted parent** — `RunBlocking` by default emits `--no-session-persistence`, so the parent must be started with `WithSessionID`, `WithResume`/`WithContinue`, or via `Connect` for `WithForkSession` to find the parent on disk.
 - **`AuthStatus` fail-close** — When the CLI exits 0 with non-JSON output, `AuthStatus` returns `AuthStateUnknown` (not `AuthStateAuthenticated`). Callers should handle this explicitly.

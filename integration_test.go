@@ -4,9 +4,25 @@ package claudecli
 
 import (
 	"context"
+	"crypto/rand"
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 )
+
+// newTestSessionID returns a random UUIDv4 string for integration tests that
+// need a persisted session (RunBlocking adds --no-session-persistence unless a
+// session flag is set).
+func newTestSessionID() string {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		panic(err)
+	}
+	b[6] = (b[6] & 0x0f) | 0x40 // version 4
+	b[8] = (b[8] & 0x3f) | 0x80 // variant RFC 4122
+	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
+}
 
 func TestIntegrationRealCLI(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
@@ -70,4 +86,49 @@ func TestIntegrationStreaming(t *testing.T) {
 			t.Errorf("missing %s event", required)
 		}
 	}
+}
+
+// TestIntegrationForkResume verifies that WithResume + WithForkSession plumbs
+// through to the CLI correctly: the fork reuses the parent's conversation
+// context (parent's marker appears in the reply) while running in a distinct
+// session ID (parent file on disk untouched). Guards the option.go fix that
+// emits --fork-session alongside --resume.
+func TestIntegrationForkResume(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+
+	client := New(WithModel(ModelHaiku))
+
+	parentSID := newTestSessionID()
+	parent, err := client.RunBlocking(ctx,
+		"Remember the marker 'zebra17'. Reply with just the marker.",
+		WithSessionID(parentSID),
+	)
+	if err != nil {
+		t.Fatalf("parent RunBlocking: %v", err)
+	}
+	if parent.SessionID == "" {
+		t.Fatal("parent session ID missing")
+	}
+	t.Logf("parent session: %s", parent.SessionID)
+
+	fork, err := client.RunBlocking(ctx,
+		"What marker did I ask you to remember? Reply with just the marker.",
+		WithResume(parent.SessionID),
+		WithForkSession(),
+	)
+	if err != nil {
+		t.Fatalf("fork RunBlocking: %v", err)
+	}
+	if fork.SessionID == "" {
+		t.Error("fork session ID missing")
+	}
+	if fork.SessionID == parent.SessionID {
+		t.Errorf("fork reused parent session ID %q — --fork-session not applied", parent.SessionID)
+	}
+	if !strings.Contains(fork.Text, "zebra17") {
+		t.Errorf("fork reply missing marker; got %q", fork.Text)
+	}
+	t.Logf("fork session: %s  reply=%q  cost=$%.6f  cache_read=%d",
+		fork.SessionID, fork.Text, fork.CostUSD, fork.Usage.CacheReadTokens)
 }

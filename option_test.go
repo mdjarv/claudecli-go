@@ -280,6 +280,33 @@ func TestBuildArgsResume(t *testing.T) {
 	}
 }
 
+func TestBuildArgsResumeFork(t *testing.T) {
+	opts := resolveOptions(nil, []Option{WithResume("sess-abc"), WithForkSession()})
+	for name, args := range map[string][]string{
+		"buildArgs":         opts.buildArgs(),
+		"buildBlockingArgs": opts.buildBlockingArgs(),
+		"buildSessionArgs":  opts.buildSessionArgs(),
+	} {
+		if v, ok := argValue(args, "--resume"); !ok || v != "sess-abc" {
+			t.Errorf("%s: missing or wrong --resume: %q", name, v)
+		}
+		if !slices.Contains(args, "--fork-session") {
+			t.Errorf("%s: missing --fork-session", name)
+		}
+	}
+}
+
+func TestBuildArgsContinueFork(t *testing.T) {
+	opts := resolveOptions(nil, []Option{WithContinue(), WithForkSession()})
+	args := opts.buildBlockingArgs()
+	if !slices.Contains(args, "--continue") {
+		t.Error("missing --continue")
+	}
+	if !slices.Contains(args, "--fork-session") {
+		t.Error("missing --fork-session")
+	}
+}
+
 func TestBuildArgsBare(t *testing.T) {
 	args := resolveOptions(nil, []Option{WithBare()}).buildArgs()
 	if !slices.Contains(args, "--bare") {

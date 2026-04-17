@@ -349,10 +349,16 @@ func (o *options) appendSessionArgs(args *[]string) {
 	}
 	if o.resume != "" {
 		*args = append(*args, "--resume", o.resume)
+		if o.forkSession {
+			*args = append(*args, "--fork-session")
+		}
 		return
 	}
 	if o.continueSession {
 		*args = append(*args, "--continue")
+		if o.forkSession {
+			*args = append(*args, "--fork-session")
+		}
 		return
 	}
 	*args = append(*args, "--no-session-persistence")
@@ -438,8 +444,14 @@ func (o *options) buildSessionArgs() []string {
 		}
 	} else if o.resume != "" {
 		args = append(args, "--resume", o.resume)
+		if o.forkSession {
+			args = append(args, "--fork-session")
+		}
 	} else if o.continueSession {
 		args = append(args, "--continue")
+		if o.forkSession {
+			args = append(args, "--fork-session")
+		}
 	}
 
 	if o.canUseTool != nil || o.userInput != nil {
