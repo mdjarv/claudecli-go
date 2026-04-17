@@ -47,7 +47,7 @@ for event := range stream.Events() {
     case *claudecli.TextEvent:
         fmt.Print(e.Content)
     case *claudecli.ThinkingEvent:
-        // extended thinking output
+        // model thinking (adaptive on 4.7+, extended on earlier models)
     case *claudecli.ToolUseEvent:
         fmt.Printf("[tool: %s]\n", e.Name)
     case *claudecli.StderrEvent:
@@ -547,7 +547,7 @@ All events implement the sealed `Event` interface. Use type switches or type ass
 | `*CompactStatusEvent` | Compaction status change. `Status` is `"compacting"` or `""` (cleared).                                                  |
 | `*CompactBoundaryEvent` | Compaction boundary marker. `Trigger` (`"manual"`/`"auto"`), `PreTokens`, `Raw` metadata.                              |
 | `*TaskEvent`       | Subagent lifecycle update (system subtypes `task_started`, `task_progress`, `task_notification`). `ToolUseID` links to the parent Agent call. Fields: `TaskID`, `Description`, `TaskType`, `Prompt`, `LastToolName`, `Status`, `Summary`, `TotalTokens`, `ToolUses`, `DurationMs`. |
-| `*ThinkingEvent`   | Extended thinking content. Includes `Signature` for verification. `ParentToolUseID` set when from a subagent.                |
+| `*ThinkingEvent`   | Model thinking output (adaptive on Opus 4.7+, extended on earlier models). Includes `Signature` for verification. `ParentToolUseID` set when from a subagent. |
 | `*TextEvent`       | Assistant text output. `ParentToolUseID` set when from a subagent.                                                           |
 | `*TurnEvent`       | New assistant turn started. `Turn` is a 1-based counter, `ToolName` is the first tool in the turn (empty for text-only turns). Only emitted for top-level turns (subagent messages excluded). |
 | `*ToolUseEvent`    | Tool invocation with name and input. `ParseAgentInput()` returns typed `*AgentInput` for Agent tool calls. `ParentToolUseID` set when from a subagent. |
@@ -570,7 +570,7 @@ All events implement the sealed `Event` interface. Use type switches or type ass
 | `WithModel(Model)`                   | Model to use (`ModelHaiku`, `ModelSonnet`, `ModelOpus`). Default: `ModelSonnet`.                      |
 | `WithFallbackModel(Model)`           | Fallback model if primary is unavailable.                                                             |
 | `WithBetas(...string)`               | Beta features to enable.                                                                              |
-| `WithMaxThinkingTokens(int)`         | Maximum thinking tokens for extended thinking.                                                        |
+| `WithMaxThinkingTokens(int)`         | **Deprecated.** Maximum thinking tokens for extended thinking (pre-4.7 models only; flag removed from current CLI). Use `WithEffort` instead. |
 | `WithSystemPrompt(string)`           | System prompt.                                                                                        |
 | `WithSystemPromptFile(string)`       | Load system prompt from a file.                                                                       |
 | `WithAppendSystemPrompt(string)`     | Append to the default system prompt.                                                                  |
@@ -590,7 +590,7 @@ All events implement the sealed `Event` interface. Use type switches or type ass
 | `WithSessionName(string)`            | Display name for the session (shown in `/resume` and terminal title).                                 |
 | `WithForkSession()`                  | Fork from the session (requires `WithSessionID`).                                                     |
 | `WithContinue()`                     | Continue the most recent session.                                                                     |
-| `WithEffort(EffortLevel)`            | Effort level (`EffortLow`, `EffortMedium`, `EffortHigh`, `EffortXHigh`, `EffortMax`).                                |
+| `WithEffort(EffortLevel)`            | Reasoning effort (`EffortLow`, `EffortMedium`, `EffortHigh`, `EffortXHigh`, `EffortMax`). `DefaultEffort` is `EffortXHigh`. Controls adaptive thinking on Opus 4.7+.                                |
 | `WithMCPConfig(...string)`           | MCP server configs — file paths or inline JSON strings.                                               |
 | `WithStrictMCPConfig()`              | Only use MCP servers from `WithMCPConfig`, ignoring all other MCP configurations.                     |
 | `WithAgent(string)`                  | Named agent for the session.                                                                          |
@@ -677,7 +677,7 @@ if errors.As(err, &ue) {
 claudecli-go/
   doc.go         Package overview, thread safety, prerequisites
   event.go       Sealed Event interface, event types
-  model.go       Model constants
+  model.go       Model constants, EffortLevel constants (including DefaultEffort)
   permission.go  PermissionMode constants
   option.go      Functional options + CLI arg builder
   executor.go         Executor interface, LocalExecutor, FixtureExecutor, BidiFixtureExecutor
@@ -713,3 +713,4 @@ claudecli-go/
 - **`WithExtraArgs` validates reserved flags** — Passing `print`, `output-format`, `input-format`, or `verbose` via `WithExtraArgs` panics at construction time to prevent conflicting CLI arguments.
 - **Blocking stderr capped at 10 MB** — `RunBlocking` caps stderr collection at 10 MB. The streaming path uses a 1000-line ring buffer.
 - **`AuthStatus` fail-close** — When the CLI exits 0 with non-JSON output, `AuthStatus` returns `AuthStateUnknown` (not `AuthStateAuthenticated`). Callers should handle this explicitly.
+- **`WithMaxThinkingTokens` removed from CLI** — The `--max-thinking-tokens` flag was removed from the Claude Code CLI in the Opus 4.7 era. The option is retained for backward compatibility but will produce an error on current CLI versions. Use `WithEffort` to control reasoning intensity.

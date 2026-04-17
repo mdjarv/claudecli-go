@@ -117,7 +117,8 @@ func (e *TaskEvent) String() string {
 	return fmt.Sprintf("TaskEvent{Subtype: %s, TaskID: %s, ToolUseID: %s}", e.Subtype, e.TaskID, e.ToolUseID)
 }
 
-// ThinkingEvent contains extended thinking output.
+// ThinkingEvent contains model thinking output (extended thinking on pre-4.7
+// models, adaptive thinking on Opus 4.7+).
 // ParentToolUseID is set when this event comes from a subagent (links to the
 // parent Agent ToolUseEvent.ID). Empty for top-level assistant turns.
 type ThinkingEvent struct {

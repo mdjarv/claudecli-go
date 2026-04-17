@@ -101,6 +101,10 @@ func WithBinaryPath(path string) Option {
 func WithModel(m Model) Option           { return func(o *options) { o.model = m } }
 func WithFallbackModel(m Model) Option   { return func(o *options) { o.fallbackModel = m } }
 func WithBetas(betas ...string) Option   { return func(o *options) { o.betas = betas } }
+// Deprecated: The --max-thinking-tokens CLI flag was removed in the Opus 4.7
+// era. Use WithEffort to control reasoning intensity instead. This option is
+// retained for users on older CLI versions but will produce an error on
+// current versions.
 func WithMaxThinkingTokens(n int) Option { return func(o *options) { o.maxThinkingTokens = n } }
 
 func WithSystemPrompt(p string) Option     { return func(o *options) { o.systemPrompt = p } }
