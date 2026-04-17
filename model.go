@@ -7,6 +7,7 @@ const (
 	EffortLow    EffortLevel = "low"
 	EffortMedium EffortLevel = "medium"
 	EffortHigh   EffortLevel = "high"
+	EffortXHigh  EffortLevel = "xhigh" // default for Opus 4.7+
 	EffortMax    EffortLevel = "max"
 )
 
