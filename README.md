@@ -202,6 +202,8 @@ info := session.ProcessInfo() // {LastStdoutAt, ActivityState, Lifecycle, Sessio
 
 `CLIStateChangeEvent` is emitted immediately BEFORE the event that triggered the transition (e.g. before the first `ToolUseEvent` of a turn), so consumers can update their state before processing the triggering event. `ProcessInfo().LastStdoutAt` is stamped from the stdout scanner independent of parsed events, so a stall can be distinguished from a quiet turn without inferring it from `ToolUseEvent`/`ToolResultEvent` pairing.
 
+While the session sits in `ActivityAwaitingToolResult`, a `ToolProgressEvent` is emitted every 30 s carrying the first pending top-level tool_use's `ToolUseID`, `ToolName`, and `Elapsed` since it started. This is a pushed liveness signal for long tool runs — consumers can render `"Bash running for 4m 12s"` directly without polling `ProcessInfo()` or computing elapsed time themselves. Parallel tool_use calls do not change the reported tool; the first one is stable until the awaiting state ends.
+
 ## Sessions
 
 ```go
@@ -596,6 +598,7 @@ All events implement the sealed `Event` interface. Use type switches or type ass
 | `*ResultEvent`     | Session complete. Text, cost, duration, usage, `NumTurns`, `StopReason`, `StructuredOutput`, `ModelUsage` (per-model context window, token limits, web search/fetch counts), `ContextSnapshot` (per-API-call usage from last `message_start`/`message_delta`; requires `WithIncludePartialMessages`; nil otherwise). Synthesized if CLI exits cleanly without one. |
 | `*ContextManagementEvent` | Emitted when the CLI compresses or summarizes older turns to fit the context window. `Raw` contains the full JSON payload. |
 | `*CLIStateChangeEvent` | Activity-state transition (`idle` / `thinking` / `awaiting_tool_result`). Emitted immediately BEFORE the triggering event so consumers can flip their state before processing the event. Lets watchdogs distinguish "model generating" from "CLI running a tool" without inferring pairing from `ToolUseEvent`/`ToolResultEvent`. Backward-compatible: ignore in the type switch if unused. |
+| `*ToolProgressEvent` | Periodic heartbeat (every 30 s) while in `awaiting_tool_result`. Carries `ToolUseID`, `ToolName`, and `Elapsed` for the first pending top-level tool_use (stable across parallel tool_use calls). Pushed liveness signal so consumers don't poll `ProcessInfo()` to render "Bash running for 4m 12s". Backward-compatible: ignore in the type switch if unused. |
 | `*ControlRequestEvent` | Control request from CLI (handled internally in sessions).                                                              |
 | `*StreamEvent`     | Partial message update (when `WithIncludePartialMessages` is on).                                                            |
 | `*ErrorEvent`      | Error during streaming. `Fatal` field distinguishes process failures (which set `StateFailed`) from non-fatal errors (parse errors, API errors). API errors are classified via `errors.Is` with sentinel errors (see error handling below). |

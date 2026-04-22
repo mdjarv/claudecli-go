@@ -128,6 +128,113 @@ func (s *sessionSim) sendTextAndResult(text string) {
 	s.bidi.StdoutWriter.Close()
 }
 
+// Verifies ToolProgressEvent fires while a top-level tool_use is outstanding
+// and stops after its tool_result pairs.
+func TestSessionToolProgressTicker(t *testing.T) {
+	sim := newSessionSim()
+	client := NewWithExecutor(sim.bidi)
+
+	querySent := make(chan struct{})
+	sendResult := make(chan struct{})
+
+	go func() {
+		sim.handleInitAndReady(t)
+		// Wait for Query() before driving tool events so the test has a
+		// chance to set a short ticker interval between Connect() and the
+		// first tool_use transition.
+		sim.readStdin(t)
+		close(querySent)
+		sim.send(`{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"Bash","input":{}}]}}`)
+		<-sendResult
+		sim.send(`{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"ok"}]}}`)
+		sim.send(`{"type":"result","subtype":"success","session_id":"test-sess","total_cost_usd":0.01,"usage":{"input_tokens":10,"output_tokens":5}}`)
+		sim.bidi.StdoutWriter.Close()
+	}()
+
+	session, err := client.Connect(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close()
+
+	// Must be set before the first tool_use is parsed. readLoop reads the
+	// atomic in startToolProgressTicker; atomic.Store happens-before the
+	// pumpSend that starts the ticker because Query() must complete first.
+	session.toolProgressIntervalNs.Store(int64(20 * time.Millisecond))
+
+	if err := session.Query("run tool"); err != nil {
+		t.Fatal(err)
+	}
+	<-querySent
+
+	deadline := time.After(2 * time.Second)
+	var progress *ToolProgressEvent
+loop:
+	for {
+		select {
+		case ev, ok := <-session.Events():
+			if !ok {
+				t.Fatal("events closed before ToolProgressEvent")
+			}
+			if tp, ok := ev.(*ToolProgressEvent); ok {
+				progress = tp
+				break loop
+			}
+		case <-deadline:
+			t.Fatal("timeout waiting for ToolProgressEvent")
+		}
+	}
+
+	if progress.ToolUseID != "t1" {
+		t.Errorf("ToolUseID = %q, want t1", progress.ToolUseID)
+	}
+	if progress.ToolName != "Bash" {
+		t.Errorf("ToolName = %q, want Bash", progress.ToolName)
+	}
+	if progress.Elapsed <= 0 {
+		t.Errorf("Elapsed = %s, want > 0", progress.Elapsed)
+	}
+	if progress.At.IsZero() {
+		t.Error("At is zero")
+	}
+
+	// Unblock sim to send tool_result + result. Then verify the ticker stops:
+	// no ToolProgressEvent should arrive after the transition back to thinking.
+	close(sendResult)
+
+	var sawResult bool
+	afterResult := time.After(200 * time.Millisecond)
+	for !sawResult {
+		select {
+		case ev, ok := <-session.Events():
+			if !ok {
+				break
+			}
+			if _, ok := ev.(*ResultEvent); ok {
+				sawResult = true
+			}
+		case <-afterResult:
+			t.Fatal("timeout waiting for ResultEvent")
+		}
+	}
+
+	// Give the ticker one more interval to prove it stopped.
+	idle := time.After(80 * time.Millisecond)
+	for {
+		select {
+		case ev, ok := <-session.Events():
+			if !ok {
+				return
+			}
+			if tp, ok := ev.(*ToolProgressEvent); ok {
+				t.Errorf("unexpected ToolProgressEvent after result: %+v", tp)
+			}
+		case <-idle:
+			return
+		}
+	}
+}
+
 func TestSessionInitialize(t *testing.T) {
 	sim := newSessionSim()
 	client := NewWithExecutor(sim.bidi)

@@ -23,6 +23,19 @@ type activityTracker struct {
 	state           ActivityState
 	pendingToolUses int
 	now             func() time.Time
+	// firstPending captures the first top-level tool_use observed since
+	// entering ActivityAwaitingToolResult. Cleared on transition out so
+	// ToolProgressEvent ticks report stable values across parallel tool_use
+	// calls and reset cleanly on the next tool-using turn.
+	firstPending pendingToolUseInfo
+}
+
+// pendingToolUseInfo identifies the first outstanding top-level tool_use
+// for ToolProgressEvent emission.
+type pendingToolUseInfo struct {
+	ID        string
+	Name      string
+	StartedAt time.Time
 }
 
 func newActivityTracker() *activityTracker {
@@ -48,6 +61,13 @@ func (t *activityTracker) observe(ev Event) *CLIStateChangeEvent {
 		}
 	case *ToolUseEvent:
 		if e.ParentToolUseID == "" {
+			if t.pendingToolUses == 0 {
+				t.firstPending = pendingToolUseInfo{
+					ID:        e.ID,
+					Name:      e.Name,
+					StartedAt: t.now(),
+				}
+			}
 			t.pendingToolUses++
 			next = ActivityAwaitingToolResult
 		}
@@ -88,7 +108,20 @@ func (t *activityTracker) observe(ev Event) *CLIStateChangeEvent {
 		return nil
 	}
 	t.state = next
+	if next != ActivityAwaitingToolResult {
+		t.firstPending = pendingToolUseInfo{}
+	}
 	return &CLIStateChangeEvent{State: next, At: t.now()}
+}
+
+// FirstPending returns the first outstanding top-level tool_use, or ok=false
+// when the tracker is not in ActivityAwaitingToolResult. Callers must hold
+// the same lock used to serialize observe/markQuery.
+func (t *activityTracker) FirstPending() (pendingToolUseInfo, bool) {
+	if t.state != ActivityAwaitingToolResult || t.firstPending.ID == "" {
+		return pendingToolUseInfo{}, false
+	}
+	return t.firstPending, true
 }
 
 // markQuery returns a CLIStateChangeEvent to ActivityThinking if the

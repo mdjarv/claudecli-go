@@ -14,6 +14,7 @@ import (
 
 const defaultControlTimeout = 30 * time.Second
 const defaultInitTimeout = 60 * time.Second
+const defaultToolProgressInterval = 30 * time.Second
 
 // Session represents a long-lived interactive Claude CLI session with
 // bidirectional control protocol support.
@@ -58,6 +59,13 @@ type Session struct {
 	readyOnce       sync.Once
 	activity        *activityTracker // guarded by stateMu
 	lastStdoutAt    atomic.Int64     // unix nanos of last stdout line; 0 until first line
+
+	// ToolProgressEvent ticker. toolProgressStop is accessed only from the
+	// readLoop goroutine (start/stop are driven by transition observations,
+	// not user calls). Interval override is atomic so tests can adjust it
+	// between Connect() and the first tool_use.
+	toolProgressStop         chan struct{}
+	toolProgressIntervalNs   atomic.Int64
 }
 
 // ProcessInfo reports process-level state for watchdogs and health monitoring.
@@ -538,6 +546,9 @@ func (s *Session) readLoop() {
 		<-pumpDone
 		close(s.events)
 	}()
+	// Defer order (LIFO): stopToolProgressTicker runs before the pump is
+	// closed so the ticker goroutine exits before pump writes would drop.
+	defer s.stopToolProgressTicker()
 
 	pumpSendRaw := func(ev Event) {
 		select {
@@ -547,13 +558,20 @@ func (s *Session) readLoop() {
 	}
 	// pumpSend emits a CLIStateChangeEvent BEFORE ev when the tracker
 	// detects a transition, so consumers see state changes ahead of the
-	// event that triggered them.
+	// event that triggered them. Transitions into/out of
+	// ActivityAwaitingToolResult also start/stop the ToolProgressEvent
+	// ticker here so its lifetime mirrors the state machine exactly.
 	pumpSend := func(ev Event) {
 		s.stateMu.Lock()
 		transition := s.activity.observe(ev)
 		s.stateMu.Unlock()
 		if transition != nil {
 			pumpSendRaw(transition)
+			if transition.State == ActivityAwaitingToolResult {
+				s.startToolProgressTicker()
+			} else {
+				s.stopToolProgressTicker()
+			}
 		}
 		pumpSendRaw(ev)
 	}
@@ -823,6 +841,66 @@ func (s *Session) failPendingRequests() {
 		}
 		s.pending.Delete(key)
 		return true
+	})
+}
+
+// startToolProgressTicker launches the periodic ToolProgressEvent emitter.
+// Called from the readLoop goroutine on transition into
+// ActivityAwaitingToolResult. Idempotent — a no-op if a ticker is already
+// running.
+func (s *Session) startToolProgressTicker() {
+	if s.toolProgressStop != nil {
+		return
+	}
+	intervalNs := s.toolProgressIntervalNs.Load()
+	interval := time.Duration(intervalNs)
+	if interval <= 0 {
+		interval = defaultToolProgressInterval
+	}
+	stop := make(chan struct{})
+	s.toolProgressStop = stop
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-stop:
+				return
+			case <-s.ctx.Done():
+				return
+			case now := <-ticker.C:
+				s.emitToolProgress(now)
+			}
+		}
+	}()
+}
+
+// stopToolProgressTicker signals the ticker goroutine to exit. Safe to call
+// when no ticker is running. Called from the readLoop goroutine on
+// transition out of ActivityAwaitingToolResult and on readLoop exit.
+func (s *Session) stopToolProgressTicker() {
+	if s.toolProgressStop == nil {
+		return
+	}
+	close(s.toolProgressStop)
+	s.toolProgressStop = nil
+}
+
+// emitToolProgress publishes a ToolProgressEvent for the current first
+// pending top-level tool_use. Safe concurrency: FirstPending is read under
+// stateMu; sendEvent handles pump-closed races.
+func (s *Session) emitToolProgress(now time.Time) {
+	s.stateMu.Lock()
+	p, ok := s.activity.FirstPending()
+	s.stateMu.Unlock()
+	if !ok {
+		return
+	}
+	s.sendEvent(&ToolProgressEvent{
+		ToolUseID: p.ID,
+		ToolName:  p.Name,
+		Elapsed:   now.Sub(p.StartedAt),
+		At:        now,
 	})
 }
 

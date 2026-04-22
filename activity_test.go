@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestActivityTrackerIdleToThinking(t *testing.T) {
@@ -98,6 +99,76 @@ func TestActivityTrackerResultResets(t *testing.T) {
 	// Next turn: markQuery works again.
 	if tr.markQuery() == nil {
 		t.Error("markQuery after idle reset should emit")
+	}
+}
+
+func TestActivityTrackerFirstPendingTracked(t *testing.T) {
+	tr := newActivityTracker()
+	start := time.Unix(1000, 0)
+	tr.now = func() time.Time { return start }
+
+	if _, ok := tr.FirstPending(); ok {
+		t.Error("FirstPending() true when idle")
+	}
+	tr.observe(&TextEvent{})
+	if _, ok := tr.FirstPending(); ok {
+		t.Error("FirstPending() true when thinking")
+	}
+	tr.observe(&ToolUseEvent{ID: "t1", Name: "Bash"})
+	p, ok := tr.FirstPending()
+	if !ok || p.ID != "t1" || p.Name != "Bash" || !p.StartedAt.Equal(start) {
+		t.Fatalf("FirstPending after first tool_use = %+v ok=%v, want t1/Bash@%s", p, ok, start)
+	}
+	// Second parallel tool_use must not clobber the first.
+	tr.now = func() time.Time { return start.Add(10 * time.Second) }
+	tr.observe(&ToolUseEvent{ID: "t2", Name: "Read"})
+	p, ok = tr.FirstPending()
+	if !ok || p.ID != "t1" || p.Name != "Bash" || !p.StartedAt.Equal(start) {
+		t.Fatalf("FirstPending after parallel tool_use = %+v, want unchanged t1/Bash", p)
+	}
+}
+
+func TestActivityTrackerFirstPendingClearsOnTransition(t *testing.T) {
+	tr := newActivityTracker()
+	tr.observe(&TextEvent{})
+	tr.observe(&ToolUseEvent{ID: "t1", Name: "Bash"})
+	if _, ok := tr.FirstPending(); !ok {
+		t.Fatal("setup: FirstPending expected true")
+	}
+	// Tool result returns to thinking; first-pending clears.
+	tr.observe(&ToolResultEvent{ToolUseID: "t1"})
+	if p, ok := tr.FirstPending(); ok {
+		t.Errorf("FirstPending() = %+v, want cleared after tool_result", p)
+	}
+}
+
+func TestActivityTrackerFirstPendingClearsOnResult(t *testing.T) {
+	tr := newActivityTracker()
+	tr.observe(&TextEvent{})
+	tr.observe(&ToolUseEvent{ID: "t1", Name: "Bash"})
+	tr.observe(&ResultEvent{})
+	if _, ok := tr.FirstPending(); ok {
+		t.Error("FirstPending() true after ResultEvent")
+	}
+}
+
+// New turn after a full idle cycle: first-pending resets to the new tool_use.
+func TestActivityTrackerFirstPendingResetsAcrossTurns(t *testing.T) {
+	tr := newActivityTracker()
+	start := time.Unix(1000, 0)
+	tr.now = func() time.Time { return start }
+	tr.observe(&TextEvent{})
+	tr.observe(&ToolUseEvent{ID: "t1", Name: "Bash"})
+	tr.observe(&ResultEvent{})
+
+	// Turn 2: new tool_use should populate FirstPending.
+	later := start.Add(time.Minute)
+	tr.now = func() time.Time { return later }
+	tr.markQuery()
+	tr.observe(&ToolUseEvent{ID: "t2", Name: "Read"})
+	p, ok := tr.FirstPending()
+	if !ok || p.ID != "t2" || p.Name != "Read" || !p.StartedAt.Equal(later) {
+		t.Fatalf("FirstPending in turn 2 = %+v ok=%v, want t2/Read@%s", p, ok, later)
 	}
 }
 

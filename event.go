@@ -533,6 +533,26 @@ func (e *CLIStateChangeEvent) String() string {
 	return fmt.Sprintf("CLIStateChangeEvent{State: %s}", e.State)
 }
 
+// ToolProgressEvent is emitted periodically while the session is in
+// ActivityAwaitingToolResult. It proves liveness in the absence of parsed
+// events and carries elapsed time since the tool_use was emitted.
+//
+// ToolUseID / ToolName identify the first pending top-level tool_use and
+// remain stable across ticks even if additional parallel tool_use calls
+// are outstanding. Consumers can render "Bash running for 4m 12s" without
+// computing elapsed time themselves.
+type ToolProgressEvent struct {
+	ToolUseID string
+	ToolName  string
+	Elapsed   time.Duration
+	At        time.Time
+}
+
+func (*ToolProgressEvent) event() {}
+func (e *ToolProgressEvent) String() string {
+	return fmt.Sprintf("ToolProgressEvent{Tool: %s, ID: %s, Elapsed: %s}", e.ToolName, e.ToolUseID, e.Elapsed)
+}
+
 // UnknownEvent is emitted when the CLI sends an event type not recognized
 // by this SDK version. Preserves the full raw JSON for inspection.
 type UnknownEvent struct {
