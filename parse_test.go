@@ -30,6 +30,19 @@ func collectEvents(t *testing.T, path string) []Event {
 	return events
 }
 
+// filterActivity drops CLIStateChangeEvent from a slice, used by tests that
+// assert exact event ordering and don't care about activity transitions.
+func filterActivity(events []Event) []Event {
+	out := make([]Event, 0, len(events))
+	for _, e := range events {
+		if _, ok := e.(*CLIStateChangeEvent); ok {
+			continue
+		}
+		out = append(out, e)
+	}
+	return out
+}
+
 func TestParseBasicStream(t *testing.T) {
 	events := collectEvents(t, "testdata/basic.jsonl")
 
@@ -837,6 +850,7 @@ func TestParseCompactionSequence(t *testing.T) {
 	for e := range ch {
 		events = append(events, e)
 	}
+	events = filterActivity(events)
 
 	// Expected: InitEvent, TurnEvent, TextEvent, ResultEvent (parser returns after first result).
 	// The compaction events come after the first result, which terminates ParseEvents.

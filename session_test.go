@@ -2548,6 +2548,137 @@ func TestSessionCompactStatusRouting(t *testing.T) {
 	}
 }
 
+func TestSessionActivityStateOverTurn(t *testing.T) {
+	sim := newSessionSim()
+	client := NewWithExecutor(sim.bidi)
+
+	go func() {
+		sim.handleInitAndReady(t)
+		sim.readStdin(t)
+		sim.send(`{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"cmd":"ls"}}]}}`)
+		sim.send(`{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"file"}]}}`)
+		sim.send(`{"type":"assistant","message":{"content":[{"type":"text","text":"done"}]}}`)
+		sim.send(`{"type":"result","subtype":"success","session_id":"test-sess","total_cost_usd":0.01,"usage":{"input_tokens":10,"output_tokens":5}}`)
+		sim.bidi.StdoutWriter.Close()
+	}()
+
+	session, err := client.Connect(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close()
+
+	if err := session.Query("do a thing"); err != nil {
+		t.Fatal(err)
+	}
+
+	var states []ActivityState
+	for ev := range session.Events() {
+		if cs, ok := ev.(*CLIStateChangeEvent); ok {
+			states = append(states, cs.State)
+			if cs.At.IsZero() {
+				t.Error("CLIStateChangeEvent.At is zero")
+			}
+		}
+	}
+
+	want := []ActivityState{
+		ActivityThinking,           // Query triggers thinking
+		ActivityAwaitingToolResult, // tool_use
+		ActivityThinking,           // tool_result returns
+		ActivityIdle,               // result
+	}
+	if len(states) != len(want) {
+		t.Fatalf("states = %v, want %v", states, want)
+	}
+	for i, s := range want {
+		if states[i] != s {
+			t.Errorf("state[%d] = %s, want %s", i, states[i], s)
+		}
+	}
+
+	if info := session.ProcessInfo(); info.ActivityState != ActivityIdle {
+		t.Errorf("ProcessInfo activity = %s, want idle", info.ActivityState)
+	}
+}
+
+func TestSessionProcessInfoLastStdoutAt(t *testing.T) {
+	sim := newSessionSim()
+	client := NewWithExecutor(sim.bidi)
+
+	go func() {
+		sim.handleInitAndReady(t)
+		sim.readStdin(t)
+		sim.sendTextAndResult("ok")
+	}()
+
+	before := time.Now()
+	session, err := client.Connect(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close()
+
+	if err := session.Query("hi"); err != nil {
+		t.Fatal(err)
+	}
+	for range session.Events() {
+	}
+
+	info := session.ProcessInfo()
+	if info.LastStdoutAt.IsZero() {
+		t.Fatal("LastStdoutAt still zero after events")
+	}
+	if info.LastStdoutAt.Before(before) {
+		t.Errorf("LastStdoutAt %s before test start %s", info.LastStdoutAt, before)
+	}
+}
+
+func TestSessionCLIStateChangeBeforeToolUse(t *testing.T) {
+	// Consumer relies on the state change arriving BEFORE the tool_use
+	// so a watchdog can flip off the "model generating" timer before the
+	// long tool call begins.
+	sim := newSessionSim()
+	client := NewWithExecutor(sim.bidi)
+
+	go func() {
+		sim.handleInitAndReady(t)
+		sim.readStdin(t)
+		sim.send(`{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"Bash","input":{}}]}}`)
+		sim.send(`{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"ok"}]}}`)
+		sim.send(`{"type":"result","subtype":"success","session_id":"test-sess","total_cost_usd":0.01,"usage":{"input_tokens":1,"output_tokens":1}}`)
+		sim.bidi.StdoutWriter.Close()
+	}()
+
+	session, err := client.Connect(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close()
+
+	if err := session.Query("q"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Walk events; assert that CLIStateChangeEvent(awaiting_tool_result)
+	// arrives immediately before the ToolUseEvent.
+	var prev Event
+	matched := false
+	for ev := range session.Events() {
+		if _, ok := ev.(*ToolUseEvent); ok {
+			cs, ok := prev.(*CLIStateChangeEvent)
+			if !ok || cs.State != ActivityAwaitingToolResult {
+				t.Fatalf("expected CLIStateChangeEvent(awaiting_tool_result) before ToolUseEvent, got %T %+v", prev, prev)
+			}
+			matched = true
+		}
+		prev = ev
+	}
+	if !matched {
+		t.Fatal("no ToolUseEvent in stream")
+	}
+}
+
 func TestSessionTrackStateFatalError(t *testing.T) {
 	sim := newSessionSim()
 	client := NewWithExecutor(sim.bidi)

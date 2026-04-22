@@ -26,6 +26,16 @@ func ParseEvents(ctx context.Context, r io.Reader, ch chan<- Event) {
 	var lastModel string
 	var turnCounter int
 
+	tracker := newActivityTracker()
+	// emit wraps ch-send with activity tracking: a CLIStateChangeEvent is
+	// emitted BEFORE ev when the tracker detects a transition.
+	emit := func(ev Event) {
+		if transition := tracker.observe(ev); transition != nil {
+			ch <- transition
+		}
+		ch <- ev
+	}
+
 	for scanner.Scan() {
 		select {
 		case <-ctx.Done():
@@ -39,7 +49,7 @@ func ParseEvents(ctx context.Context, r io.Reader, ch chan<- Event) {
 
 		var raw rawEvent
 		if err := json.Unmarshal(line, &raw); err != nil {
-			ch <- &ErrorEvent{Err: fmt.Errorf("unmarshal JSONL: %w", err)}
+			emit(&ErrorEvent{Err: fmt.Errorf("unmarshal JSONL: %w", err)})
 			continue
 		}
 
@@ -47,34 +57,34 @@ func ParseEvents(ctx context.Context, r io.Reader, ch chan<- Event) {
 		case "system":
 			switch raw.Subtype {
 			case "init", "":
-				ch <- &InitEvent{
+				emit(&InitEvent{
 					SessionID:  raw.SessionID,
 					Model:      raw.Model,
 					Tools:      raw.Tools,
 					Agents:     raw.Agents,
 					Skills:     raw.Skills,
 					MCPServers: raw.MCPServers,
-				}
+				})
 			case "status":
 				status := ""
 				if raw.Status != nil {
 					status = *raw.Status
 				}
-				ch <- &CompactStatusEvent{
+				emit(&CompactStatusEvent{
 					SessionID: raw.SessionID,
 					Status:    status,
-				}
+				})
 			case "compact_boundary":
-				ch <- parseCompactBoundaryEvent(&raw)
+				emit(parseCompactBoundaryEvent(&raw))
 			case "task_started", "task_progress", "task_notification":
-				ch <- parseTaskEvent(&raw, line)
+				emit(parseTaskEvent(&raw, line))
 			case "hook_started", "hook_response":
-				ch <- parseHookEvent(&raw, line)
+				emit(parseHookEvent(&raw, line))
 			default:
-				ch <- &UnknownEvent{
+				emit(&UnknownEvent{
 					Type: "system/" + raw.Subtype,
 					Raw:  append(json.RawMessage(nil), line...),
-				}
+				})
 			}
 
 		case "assistant":
@@ -95,13 +105,13 @@ func ParseEvents(ctx context.Context, r io.Reader, ch chan<- Event) {
 						break
 					}
 				}
-				ch <- &TurnEvent{Turn: turnCounter, ToolName: toolName}
+				emit(&TurnEvent{Turn: turnCounter, ToolName: toolName})
 			}
 			for _, block := range raw.Message.Content {
-				parseContentBlock(block, parentToolUseID, &resultText, ch)
+				parseContentBlock(block, parentToolUseID, &resultText, emit)
 			}
 			if len(raw.Message.ContextManagement) > 0 && string(raw.Message.ContextManagement) != "null" {
-				ch <- &ContextManagementEvent{Raw: raw.Message.ContextManagement}
+				emit(&ContextManagementEvent{Raw: raw.Message.ContextManagement})
 			}
 
 		case "result":
@@ -115,9 +125,9 @@ func ParseEvents(ctx context.Context, r io.Reader, ch chan<- Event) {
 			// using errors.Is(err, ErrMaxTurns) can detect it via Stream.Wait().
 			if raw.Subtype == "error_max_turns" {
 				mte := classifyMaxTurns(raw.Errors)
-				ch <- &ErrorEvent{Err: mte, Fatal: false}
+				emit(&ErrorEvent{Err: mte, Fatal: false})
 			}
-			ch <- &ResultEvent{
+			emit(&ResultEvent{
 				Text:             strings.Join(resultText, ""),
 				Subtype:          raw.Subtype,
 				StopReason:       raw.StopReason,
@@ -129,80 +139,80 @@ func ParseEvents(ctx context.Context, r io.Reader, ch chan<- Event) {
 				Usage:            raw.Usage.toUsage(),
 				ModelUsage:       modelUsage,
 				ContextSnapshot:  snapshot,
-			}
+			})
 			// Result is the terminal event. Return immediately to avoid
 			// blocking on scanner.Scan() if the CLI keeps stdout open (known bug).
 			return
 
 		case "rate_limit_event":
-			ch <- parseRateLimitEvent(&raw)
+			emit(parseRateLimitEvent(&raw))
 
 		case "control_request":
 			var body rawControlRequestBody
 			if err := json.Unmarshal(raw.Request, &body); err != nil {
-				ch <- &ErrorEvent{Err: fmt.Errorf("unmarshal control request: %w", err)}
+				emit(&ErrorEvent{Err: fmt.Errorf("unmarshal control request: %w", err)})
 				continue
 			}
-			ch <- &ControlRequestEvent{
+			emit(&ControlRequestEvent{
 				RequestID: raw.RequestID,
 				Subtype:   body.Subtype,
 				Body:      raw.Request,
-			}
+			})
 
 		case "stream_event":
-			ch <- &StreamEvent{
+			emit(&StreamEvent{
 				UUID:      raw.UUID,
 				SessionID: raw.SessionID,
 				Event:     raw.Event,
-			}
+			})
 			updateContextSnapshot(raw.Event, &snapshot, &lastModel)
 
 		case "error":
-			ch <- parseErrorEvent(&raw)
+			emit(parseErrorEvent(&raw))
 
 		case "user":
-			ch <- parseUserEvent(&raw)
+			emit(parseUserEvent(&raw))
 
 		default:
-			ch <- &UnknownEvent{
+			emit(&UnknownEvent{
 				Type: raw.Type,
 				Raw:  append(json.RawMessage(nil), line...),
-			}
+			})
 		}
 	}
 
 	if err := scanner.Err(); err != nil {
-		ch <- &ErrorEvent{Err: fmt.Errorf("scanner: %w", err)}
+		emit(&ErrorEvent{Err: fmt.Errorf("scanner: %w", err)})
 	}
 }
 
-func parseContentBlock(block rawContent, parentToolUseID string, resultText *[]string, ch chan<- Event) {
+func parseContentBlock(block rawContent, parentToolUseID string, resultText *[]string, emit func(Event)) {
 	switch block.Type {
 	case "thinking":
-		ch <- &ThinkingEvent{Content: block.Thinking, Signature: block.Signature, ParentToolUseID: parentToolUseID}
+		emit(&ThinkingEvent{Content: block.Thinking, Signature: block.Signature, ParentToolUseID: parentToolUseID})
 	case "text":
 		*resultText = append(*resultText, block.Text)
-		ch <- &TextEvent{Content: block.Text, ParentToolUseID: parentToolUseID}
+		emit(&TextEvent{Content: block.Text, ParentToolUseID: parentToolUseID})
 	case "tool_use":
-		ch <- &ToolUseEvent{
+		emit(&ToolUseEvent{
 			ID:              block.ID,
 			Name:            block.Name,
 			Input:           block.Input,
 			ParentToolUseID: parentToolUseID,
-		}
+		})
 	case "tool_result":
-		ch <- &ToolResultEvent{
+		emit(&ToolResultEvent{
 			ToolUseID:       block.ToolUseID,
 			Content:         extractContent(block.Content),
 			ParentToolUseID: parentToolUseID,
-		}
+		})
 	default:
 		if block.Type != "" {
 			raw, _ := json.Marshal(block)
-			ch <- &UnknownEvent{
+			emit(&UnknownEvent{
 				Type: "content/" + block.Type,
 				Raw:  raw,
-			}
+			})
 		}
 	}
 }

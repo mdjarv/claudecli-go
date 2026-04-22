@@ -182,6 +182,26 @@ States: `StateStarting`, `StateRunning`, `StateDone`, `StateFailed`.
 
 Session lifecycle differs: `StateStarting` → `StateIdle` (after Connect) → `StateRunning` (during Query) → `StateIdle` (after result) → `StateDone` (after Close).
 
+### Activity state (watchdogs)
+
+Lifecycle state tells you *what phase the session is in*; activity state tells you *what the CLI is doing right now*. For watchdogs that time out on event silence, use activity state to distinguish "model is generating" from "CLI is executing a tool" from "between turns":
+
+```go
+for ev := range session.Events() {
+    if cs, ok := ev.(*CLIStateChangeEvent); ok {
+        // cs.State is one of:
+        //   ActivityIdle              — between turns
+        //   ActivityThinking          — model is generating
+        //   ActivityAwaitingToolResult — a top-level tool_use is outstanding
+        resetTimer(cs.State)
+    }
+}
+
+info := session.ProcessInfo() // {LastStdoutAt, ActivityState, Lifecycle, SessionID}
+```
+
+`CLIStateChangeEvent` is emitted immediately BEFORE the event that triggered the transition (e.g. before the first `ToolUseEvent` of a turn), so consumers can update their state before processing the triggering event. `ProcessInfo().LastStdoutAt` is stamped from the stdout scanner independent of parsed events, so a stall can be distinguished from a quiet turn without inferring it from `ToolUseEvent`/`ToolResultEvent` pairing.
+
 ## Sessions
 
 ```go
@@ -575,6 +595,7 @@ All events implement the sealed `Event` interface. Use type switches or type ass
 | `*StderrEvent`     | A line of stderr output from the CLI process.                                                                               |
 | `*ResultEvent`     | Session complete. Text, cost, duration, usage, `NumTurns`, `StopReason`, `StructuredOutput`, `ModelUsage` (per-model context window, token limits, web search/fetch counts), `ContextSnapshot` (per-API-call usage from last `message_start`/`message_delta`; requires `WithIncludePartialMessages`; nil otherwise). Synthesized if CLI exits cleanly without one. |
 | `*ContextManagementEvent` | Emitted when the CLI compresses or summarizes older turns to fit the context window. `Raw` contains the full JSON payload. |
+| `*CLIStateChangeEvent` | Activity-state transition (`idle` / `thinking` / `awaiting_tool_result`). Emitted immediately BEFORE the triggering event so consumers can flip their state before processing the event. Lets watchdogs distinguish "model generating" from "CLI running a tool" without inferring pairing from `ToolUseEvent`/`ToolResultEvent`. Backward-compatible: ignore in the type switch if unused. |
 | `*ControlRequestEvent` | Control request from CLI (handled internally in sessions).                                                              |
 | `*StreamEvent`     | Partial message update (when `WithIncludePartialMessages` is on).                                                            |
 | `*ErrorEvent`      | Error during streaming. `Fatal` field distinguishes process failures (which set `StateFailed`) from non-fatal errors (parse errors, API errors). API errors are classified via `errors.Is` with sentinel errors (see error handling below). |

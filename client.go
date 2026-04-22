@@ -251,6 +251,7 @@ func (c *Client) Connect(ctx context.Context, opts ...Option) (*Session, error) 
 		initTimeout:    initTimeout,
 		resultReady:    make(chan struct{}),
 		readyCh:        make(chan struct{}),
+		activity:       newActivityTracker(),
 	}
 
 	go session.readLoop()

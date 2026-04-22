@@ -55,6 +55,44 @@ type Session struct {
 	resultCloseOnce sync.Once
 	readyCh         chan struct{} // closed after initialize (or first system event on older CLIs)
 	readyOnce       sync.Once
+	activity        *activityTracker // guarded by stateMu
+	lastStdoutAt    time.Time        // guarded by stateMu; zero until first stdout line
+}
+
+// ProcessInfo reports process-level state for watchdogs and health monitoring.
+// LastStdoutAt is updated from the stdout scanner loop and is independent of
+// parsed events, so a stall can be distinguished from a quiet turn.
+type ProcessInfo struct {
+	// LastStdoutAt is the time the CLI last wrote a line to stdout. Zero
+	// until the first line is received.
+	LastStdoutAt time.Time
+	// ActivityState is the derived activity state (idle, thinking, awaiting_tool_result).
+	ActivityState ActivityState
+	// Lifecycle is the session lifecycle state.
+	Lifecycle State
+	// SessionID is the CLI-assigned session ID, or empty if not yet assigned.
+	SessionID string
+}
+
+// ProcessInfo returns a snapshot of process-level state useful for watchdogs.
+// Consumers can compare LastStdoutAt against the wall clock to detect stdout
+// stalls without having to infer state from event pairings.
+func (s *Session) ProcessInfo() ProcessInfo {
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
+	return ProcessInfo{
+		LastStdoutAt:  s.lastStdoutAt,
+		ActivityState: s.activity.State(),
+		Lifecycle:     s.state,
+		SessionID:     s.sessionID,
+	}
+}
+
+// ActivityState returns the current activity state.
+func (s *Session) ActivityState() ActivityState {
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
+	return s.activity.State()
 }
 
 // Events returns the event channel. Closed when session ends.
@@ -139,6 +177,9 @@ func (s *Session) Query(prompt string) error {
 	if err := s.prepareQuery(); err != nil {
 		return err
 	}
+	// Emit thinking transition before writing stdin so the transition is
+	// visible in the pump ahead of any CLI response to this query.
+	s.emitQueryActivity()
 	return s.sendUserMessage(prompt)
 }
 
@@ -151,6 +192,7 @@ func (s *Session) QueryWithContent(prompt string, blocks ...ContentBlock) error 
 	content := make([]ContentBlock, 0, 1+len(blocks))
 	content = append(content, TextBlock(prompt))
 	content = append(content, blocks...)
+	s.emitQueryActivity()
 	return s.sendUserMessage(content)
 }
 
@@ -162,6 +204,7 @@ func (s *Session) SendMessage(prompt string) error {
 	if err := s.validateSendable(); err != nil {
 		return err
 	}
+	s.emitQueryActivity()
 	return s.sendUserMessage(prompt)
 }
 
@@ -174,7 +217,20 @@ func (s *Session) SendMessageWithContent(prompt string, blocks ...ContentBlock) 
 	content := make([]ContentBlock, 0, 1+len(blocks))
 	content = append(content, TextBlock(prompt))
 	content = append(content, blocks...)
+	s.emitQueryActivity()
 	return s.sendUserMessage(content)
+}
+
+// emitQueryActivity pushes a CLIStateChangeEvent(thinking) to the event
+// stream when the tracker is idle. No-op when already in a non-idle state
+// (e.g. mid-turn SendMessage injection).
+func (s *Session) emitQueryActivity() {
+	s.stateMu.Lock()
+	transition := s.activity.markQuery()
+	s.stateMu.Unlock()
+	if transition != nil {
+		s.sendEvent(transition)
+	}
 }
 
 // Wait blocks until a ResultEvent or error for the current query.
@@ -476,11 +532,23 @@ func (s *Session) readLoop() {
 		close(s.events)
 	}()
 
-	pumpSend := func(ev Event) {
+	pumpSendRaw := func(ev Event) {
 		select {
 		case pump <- ev:
 		case <-s.ctx.Done():
 		}
+	}
+	// pumpSend emits a CLIStateChangeEvent BEFORE ev when the tracker
+	// detects a transition, so consumers see state changes ahead of the
+	// event that triggered them.
+	pumpSend := func(ev Event) {
+		s.stateMu.Lock()
+		transition := s.activity.observe(ev)
+		s.stateMu.Unlock()
+		if transition != nil {
+			pumpSendRaw(transition)
+		}
+		pumpSendRaw(ev)
 	}
 
 	stderrRing, stderrDone := scanStderr(s.ctx, s.proc, pump, nil)
@@ -500,6 +568,9 @@ func (s *Session) readLoop() {
 
 	for scanner.Scan() {
 		line := scanner.Bytes()
+		s.stateMu.Lock()
+		s.lastStdoutAt = time.Now()
+		s.stateMu.Unlock()
 		if len(line) == 0 {
 			continue
 		}
@@ -727,6 +798,12 @@ func (s *Session) failPendingRequests() {
 }
 
 func (s *Session) sendEvent(ev Event) {
+	// Recover if pump was closed between the validateSendable check and
+	// this write. The pump is closed by readLoop's defer after stdout EOF,
+	// and callers like emitQueryActivity run on the user's goroutine —
+	// they may race the shutdown path. Dropping the event is correct: the
+	// session has ended, so downstream consumers won't see more events.
+	defer func() { _ = recover() }()
 	select {
 	case s.pump <- ev:
 	case <-s.ctx.Done():

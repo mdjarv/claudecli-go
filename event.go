@@ -498,6 +498,41 @@ func (e *ContextManagementEvent) String() string {
 	return fmt.Sprintf("ContextManagementEvent{len: %d}", len(e.Raw))
 }
 
+// ActivityState describes the high-level activity of a CLI session.
+// Distinct from the lifecycle State (starting/idle/running/done/failed):
+// it tells consumers whether silence in the event stream means the model
+// is generating, a tool is executing, or the session is between turns.
+type ActivityState string
+
+const (
+	// ActivityIdle means the session is between turns (no query in flight).
+	ActivityIdle ActivityState = "idle"
+	// ActivityThinking means the model is generating.
+	ActivityThinking ActivityState = "thinking"
+	// ActivityAwaitingToolResult means at least one top-level tool_use has
+	// been emitted without its matching tool_result; the CLI is executing
+	// the tool (or waiting for a permission callback).
+	ActivityAwaitingToolResult ActivityState = "awaiting_tool_result"
+)
+
+// CLIStateChangeEvent signals a transition in activity state. Emitted
+// immediately BEFORE the triggering event (e.g. the first top-level
+// ToolUseEvent of a turn is preceded by a transition to
+// ActivityAwaitingToolResult), so consumers can update their view of the
+// session before processing the event itself.
+//
+// Backward compatible: callers that don't care about activity state can
+// ignore it in their type switch.
+type CLIStateChangeEvent struct {
+	State ActivityState
+	At    time.Time
+}
+
+func (*CLIStateChangeEvent) event() {}
+func (e *CLIStateChangeEvent) String() string {
+	return fmt.Sprintf("CLIStateChangeEvent{State: %s}", e.State)
+}
+
 // UnknownEvent is emitted when the CLI sends an event type not recognized
 // by this SDK version. Preserves the full raw JSON for inspection.
 type UnknownEvent struct {
