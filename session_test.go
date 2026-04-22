@@ -3085,6 +3085,34 @@ func TestSessionPing(t *testing.T) {
 		}
 	})
 
+	t.Run("readLoop already exited", func(t *testing.T) {
+		sim := newSessionSim()
+		client := NewWithExecutor(sim.bidi)
+
+		go func() {
+			sim.handleInitAndReady(t)
+			// Close stdout immediately — readLoop exits before Ping is called.
+			sim.bidi.StdoutWriter.Close()
+		}()
+
+		session, err := client.Connect(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		// Drain to ensure readLoop has fully exited before we ping.
+		for range session.Events() {
+		}
+
+		err = session.Ping(5 * time.Second)
+		if err == nil {
+			t.Fatal("expected error after readLoop exit, got nil")
+		}
+		if !errors.Is(err, errSessionEnded) {
+			t.Errorf("expected errSessionEnded, got: %v", err)
+		}
+	})
+
 	t.Run("session ended during ping", func(t *testing.T) {
 		sim := newSessionSim()
 		client := NewWithExecutor(sim.bidi)

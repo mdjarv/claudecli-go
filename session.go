@@ -302,6 +302,16 @@ func (s *Session) Ping(timeout time.Duration) error {
 		timeout = s.controlTimeout
 	}
 
+	// Fast path: if readLoop has already exited, don't bother writing.
+	// Writing to stdin when the CLI process has exited can block on an
+	// in-memory pipe in tests, or return EPIPE in production; either way,
+	// an early return gives the watchdog a clear answer.
+	select {
+	case <-s.done:
+		return fmt.Errorf("ping: %w", errSessionEnded)
+	default:
+	}
+
 	id := fmt.Sprintf("req_%d", s.reqCounter.Add(1))
 	resultCh := make(chan controlResult, 1)
 	s.pending.Store(id, resultCh)
@@ -332,6 +342,11 @@ func (s *Session) Ping(timeout time.Duration) error {
 		// Any other response (success or CLI-side error like "unknown
 		// subtype") proves the read loop is alive.
 		return nil
+	case <-s.done:
+		// readLoop exited before or during the request — e.g. process
+		// crashed, or failPendingRequests ran before Store. Report as
+		// session ended rather than letting the caller wait to timeout.
+		return fmt.Errorf("ping: %w", errSessionEnded)
 	case <-ctx.Done():
 		if s.ctx.Err() != nil {
 			return fmt.Errorf("ping: %w", s.ctx.Err())
