@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -2548,6 +2549,53 @@ func TestSessionCompactStatusRouting(t *testing.T) {
 	}
 }
 
+func TestSessionMaxTurnsError(t *testing.T) {
+	sim := newSessionSim()
+	client := NewWithExecutor(sim.bidi)
+
+	go func() {
+		sim.handleInitAndReady(t)
+		sim.readStdin(t)
+		sim.send(`{"type":"result","subtype":"error_max_turns","session_id":"test-sess","num_turns":5,"errors":["reached max turns limit"],"total_cost_usd":0.01,"usage":{"input_tokens":1,"output_tokens":1}}`)
+		sim.bidi.StdoutWriter.Close()
+	}()
+
+	session, err := client.Connect(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close()
+	if err := session.Query("q"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Drain events first so the non-fatal ErrorEvent is observable in the
+	// stream, then Wait for the typed error.
+	var sawErrorEvent bool
+	for ev := range session.Events() {
+		if ee, ok := ev.(*ErrorEvent); ok {
+			if errors.Is(ee.Err, ErrMaxTurns) {
+				sawErrorEvent = true
+			}
+		}
+	}
+	if !sawErrorEvent {
+		t.Error("no non-fatal ErrorEvent with ErrMaxTurns was emitted to consumers")
+	}
+
+	_, err = session.Wait()
+	if !errors.Is(err, ErrMaxTurns) {
+		t.Errorf("Wait err = %v, want errors.Is(err, ErrMaxTurns)", err)
+	}
+	var mte *MaxTurnsError
+	if !errors.As(err, &mte) {
+		t.Fatalf("errors.As(err, *MaxTurnsError) failed: %v", err)
+	}
+	if mte.Turns != 5 {
+		t.Errorf("MaxTurnsError.Turns = %d, want 5", mte.Turns)
+	}
+}
+
 func TestSessionResultNumTurns(t *testing.T) {
 	sim := newSessionSim()
 	client := NewWithExecutor(sim.bidi)
@@ -2854,9 +2902,13 @@ func TestSessionTrackStateFatalError(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Drain events
+	// Drain events (events channel closes before setDoneState runs — a
+	// drained range alone is not enough to observe the final state).
 	for range session.Events() {
 	}
+	// Wait blocks on s.done, which is closed AFTER setDoneState runs, so
+	// the State() read below is deterministic.
+	_, _ = session.Wait()
 
 	if st := session.State(); st != StateDone && st != StateFailed {
 		t.Errorf("expected terminal state, got %s", st)

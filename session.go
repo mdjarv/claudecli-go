@@ -705,6 +705,12 @@ func (s *Session) readLoop() {
 					snapshot.ContextWindow = mu.ContextWindow
 				}
 			}
+			// Classify error_max_turns as a non-fatal ErrorEvent so
+			// downstream consumers see the typed error alongside the
+			// terminating ResultEvent (matches ParseEvents behaviour).
+			if raw.Subtype == "error_max_turns" {
+				pumpSend(&ErrorEvent{Err: classifyMaxTurns(raw.Errors), Fatal: false})
+			}
 			ev := &ResultEvent{
 				Text:             strings.Join(resultText, ""),
 				Subtype:          raw.Subtype,
@@ -848,6 +854,14 @@ func (s *Session) trackState(event Event) {
 	case *ResultEvent:
 		s.state = StateIdle
 		s.result = e
+		// Match Stream.Wait behaviour: surface error_max_turns as a
+		// typed error so callers can use errors.Is(err, ErrMaxTurns).
+		if s.err == nil && e.Subtype == "error_max_turns" {
+			s.err = &MaxTurnsError{
+				Turns:   e.NumTurns,
+				Message: "reached maximum number of turns",
+			}
+		}
 		s.resultCloseOnce.Do(func() { close(s.resultReady) })
 	case *ErrorEvent:
 		if e.Fatal {
